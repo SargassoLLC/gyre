@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="gyre.png" alt="Gyre" width="200"/>
+  <img src="" alt="Gyre" width="200"/>
 </p>
 
 <h1 align="center">Gyre</h1>
