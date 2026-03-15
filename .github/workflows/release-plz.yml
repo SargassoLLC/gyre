@@ -1,0 +1,43 @@
+name: Release PR
+
+# Opens a "chore: release vX.Y.Z" PR when commits land on gyre-main.
+# Bumps version in Cargo.toml, updates CHANGELOG.md.
+# Requires: release-plz configured in release-plz.toml (optional)
+#
+# NOTE: Disabled until CARGO_REGISTRY_TOKEN and a GitHub App are configured.
+# To enable: remove the `if: false` guard below.
+
+on:
+  push:
+    branches:
+      - gyre-main
+
+jobs:
+  release-plz-pr:
+    if: false  # enable when secrets are configured
+    name: Release PR
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    concurrency:
+      group: release-plz-${{ github.ref }}
+      cancel-in-progress: false
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Run release-plz
+        uses: release-plz/action@v0.5
+        with:
+          command: release-pr
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}

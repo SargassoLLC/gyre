@@ -1,0 +1,20 @@
+[Unit]
+Description=Gyre AI Assistant
+After=cloud-sql-proxy.service docker.service
+Requires=cloud-sql-proxy.service
+
+[Service]
+Type=simple
+ExecStartPre=/usr/bin/docker pull us-central1-docker.pkg.dev/gyre-prod/gyre/agent:latest
+ExecStart=/usr/bin/docker run --rm \
+  --name gyre \
+  --env-file /opt/gyre/.env \
+  --network=host \
+  us-central1-docker.pkg.dev/gyre-prod/gyre/agent:latest \
+  --no-onboard
+ExecStop=/usr/bin/docker stop gyre
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

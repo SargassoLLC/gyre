@@ -1,0 +1,139 @@
+# Gyre configuration file (example).
+#
+# Copy to ~/.gyre/config.toml and uncomment values to override defaults.
+# Priority: env var > this file > database settings > defaults.
+#
+# Run `gyre config init` to generate a config file with your current settings.
+
+# ─── Onboarding ──────────────────────────────────────────────────────
+# onboard_completed = false
+
+# ─── Database ────────────────────────────────────────────────────────
+# Default: libsql (zero-config, creates ~/.gyre/gyre.db automatically)
+# database_backend = "libsql"
+# database_url = "postgres://localhost/gyre"     # only for postgres backend
+# database_pool_size = 10
+# libsql_path = "~/.gyre/gyre.db"
+# libsql_url = "libsql://your-db.turso.io"      # optional Turso cloud sync
+
+# ─── Security ────────────────────────────────────────────────────────
+# secrets_master_key_source = "none"              # "keychain", "env", or "none"
+
+# ─── LLM Provider ───────────────────────────────────────────────────
+# Default: anthropic (auto-detects Claude Code OAuth or ANTHROPIC_API_KEY)
+# llm_backend = "anthropic"
+# selected_model = "claude-sonnet-4-5-20250929"
+# ollama_base_url = "http://localhost:11434"
+# openai_compatible_base_url = "http://localhost:8000/v1"
+
+# ─── Embeddings ──────────────────────────────────────────────────────
+# [embeddings]
+# enabled = false
+# provider = "openai"
+# model = "text-embedding-3-small"
+
+# ─── Tunnel ──────────────────────────────────────────────────────────
+# [tunnel]
+# provider = "ngrok"                # "ngrok", "cloudflare", "tailscale", "custom"
+# public_url = ""                   # static URL (bypasses managed tunnel)
+# ngrok_token = ""
+# ngrok_domain = ""
+# cf_token = ""
+# ts_funnel = false
+# ts_hostname = ""
+# custom_command = ""
+# custom_health_url = ""
+# custom_url_pattern = ""
+
+# ─── Channels ────────────────────────────────────────────────────────
+# [channels]
+# http_enabled = false
+# http_port = 3000
+# http_host = "0.0.0.0"
+# wasm_channels_enabled = true
+# wasm_channels = []
+
+# ─── Heartbeat ───────────────────────────────────────────────────────
+# [heartbeat]
+# enabled = false
+# interval_secs = 1800              # 30 minutes
+# notify_channel = "cli"
+# notify_user = "default"
+
+# ─── Agent ───────────────────────────────────────────────────────────
+# [agent]
+# name = "gyre"
+# max_parallel_jobs = 5
+# job_timeout_secs = 3600
+# stuck_threshold_secs = 300
+# use_planning = true
+# repair_check_interval_secs = 60
+# max_repair_attempts = 3
+# session_idle_timeout_secs = 604800  # 7 days
+
+# ─── WASM Sandbox ────────────────────────────────────────────────────
+# [wasm]
+# enabled = true
+# default_memory_limit = 10485760   # 10 MB
+# default_timeout_secs = 60
+# default_fuel_limit = 10000000
+# cache_compiled = true
+
+# ─── Docker Sandbox ──────────────────────────────────────────────────
+# [sandbox]
+# enabled = true
+# policy = "readonly"               # "readonly", "workspace_write", "full_access"
+# timeout_secs = 120
+# memory_limit_mb = 2048
+# cpu_shares = 1024
+# image = "gyre-worker:latest"
+# auto_pull_image = true
+
+# ─── Safety ──────────────────────────────────────────────────────────
+# [safety]
+# max_output_length = 100000
+# injection_check_enabled = true
+
+# ─── Builder ─────────────────────────────────────────────────────────
+# [builder]
+# enabled = true
+# max_iterations = 20
+# timeout_secs = 600
+# auto_register = true
+
+# ─── Resilience ──────────────────────────────────────────────────────
+# Circuit breaker: fast-fails requests when the LLM backend is degraded.
+# Enabled by default — pure reliability improvement with no downside.
+[resilience.circuit_breaker]
+enabled = true
+failure_threshold = 5               # consecutive failures before circuit opens
+reset_timeout_secs = 30             # seconds before allowing a probe
+
+# Response cache: caches LLM responses by request hash.
+# Disabled by default for main provider (stale risk in conversations).
+# Enabled automatically for the cheap/heartbeat provider.
+[resilience.response_cache]
+enabled = false
+ttl_secs = 3600                     # 1 hour
+max_entries = 1000
+
+# Failover: tries a secondary provider when the primary fails.
+# Requires configuring a fallback backend.
+[resilience.failover]
+enabled = false
+# fallback_backend = "ollama"       # "anthropic", "openai", "ollama", "openai_compatible"
+# fallback_model = "llama3.2"
+# fallback_base_url = "http://localhost:11434"
+# fallback_api_key = ""
+cooldown_secs = 60
+
+# ─── Multi-Agent ─────────────────────────────────────────────────────
+# [multi_agent]
+# enabled = false
+
+# ─── Web Gateway ─────────────────────────────────────────────────────
+# [gateway]
+# enabled = false
+# host = "127.0.0.1"
+# port = 3001
+# auth_token = "changeme"

@@ -1,0 +1,28 @@
+# Gyre simple mode: single container with embedded libSQL database.
+# Zero external dependencies — just bring your API key.
+#
+# Usage:
+#   cp deploy/env.example .env   # edit with your API keys
+#   docker-compose -f docker-compose.simple.yml up
+
+services:
+  gyre:
+    build: .
+    ports:
+      - "3000:3000"
+    env_file: .env
+    environment:
+      DATABASE_BACKEND: libsql
+      LIBSQL_PATH: /home/gyre/.gyre/gyre.db
+    healthcheck:
+      test: ["CMD", "gyre", "health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    restart: unless-stopped
+    volumes:
+      - gyre-data:/home/gyre/.gyre
+
+volumes:
+  gyre-data:

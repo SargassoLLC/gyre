@@ -1,0 +1,50 @@
+# Gyre full stack: PostgreSQL + Gyre agent.
+#
+# Usage:
+#   cp deploy/env.example .env   # edit with your API keys
+#   docker-compose up
+#
+# The gyre service waits for postgres to be healthy before starting.
+# Local dev credentials only — change for any non-local deployment.
+
+services:
+  gyre:
+    build: .
+    ports:
+      - "3000:3000"
+    env_file: .env
+    environment:
+      DATABASE_BACKEND: postgres
+      DATABASE_URL: postgres://gyre:gyre@postgres:5432/gyre
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "gyre", "health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    restart: unless-stopped
+    volumes:
+      - gyre-data:/home/gyre/.gyre
+
+  postgres:
+    image: pgvector/pgvector:pg16
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_DB: gyre
+      POSTGRES_USER: gyre
+      POSTGRES_PASSWORD: gyre  # dev-only, change for any non-local deployment
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U gyre"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+volumes:
+  pgdata:
+  gyre-data:

@@ -1,0 +1,362 @@
+//! CLI command handling.
+//!
+//! Provides subcommands for:
+//! - Running the agent (`run`)
+//! - Unified setup wizard (`setup`)
+//! - Managing configuration (`config list`, `config get`, `config set`)
+//! - Managing WASM tools (`tool install`, `tool list`, `tool remove`)
+//! - Managing MCP servers (`mcp add`, `mcp auth`, `mcp list`, `mcp test`)
+//! - Querying workspace memory (`memory search`, `memory read`, `memory write`)
+//! - Managing OS service (`service install`, `service start`, `service stop`)
+//! - Active health diagnostics (`doctor`)
+//! - Checking system health (`status`)
+
+pub mod agents;
+pub mod axiom;
+pub mod cognitive_run;
+mod config;
+mod doctor;
+pub mod explore;
+mod health;
+pub mod license;
+mod mcp;
+pub mod memory;
+pub mod oauth_defaults;
+mod pairing;
+pub mod send;
+pub mod serve;
+mod service;
+pub mod status;
+mod template;
+mod tool;
+pub mod tribe;
+pub mod update;
+pub mod usage;
+
+pub use axiom::{AxiomCommand, run_axiom_command};
+pub use config::{ConfigCommand, run_config_command};
+pub use doctor::run_doctor_command;
+pub use health::run_health_command;
+pub use license::{LicenseCommand, run_license_command};
+pub use mcp::{McpCommand, run_mcp_command};
+pub use memory::MemoryCommand;
+#[cfg(feature = "postgres")]
+pub use memory::run_memory_command;
+pub use memory::run_memory_command_with_db;
+pub use pairing::{PairingCommand, run_pairing_command, run_pairing_command_with_store};
+pub use service::{ServiceCommand, run_service_command};
+pub use status::run_status_command;
+pub use template::{TemplateCommand, run_template_command};
+pub use tool::{ToolCommand, run_tool_command};
+pub use update::{UpdateOptions, run_update};
+pub use usage::{UsageOptions, run_usage};
+
+use clap::{Parser, Subcommand};
+
+#[derive(Parser, Debug)]
+#[command(name = "gyre")]
+#[command(
+    about = "Secure personal AI assistant that protects your data and expands its capabilities"
+)]
+#[command(version)]
+pub struct Cli {
+    #[command(subcommand)]
+    pub command: Option<Command>,
+
+    /// Run in interactive CLI mode only (disable other channels)
+    #[arg(long, global = true)]
+    pub cli_only: bool,
+
+    /// Skip database connection (for testing)
+    #[arg(long, global = true)]
+    pub no_db: bool,
+
+    /// Single message mode - send one message and exit
+    #[arg(short, long, global = true)]
+    pub message: Option<String>,
+
+    /// Configuration file path (optional, uses env vars by default)
+    #[arg(short, long, global = true)]
+    pub config: Option<std::path::PathBuf>,
+
+    /// Skip first-run onboarding check
+    #[arg(long, global = true)]
+    pub no_onboard: bool,
+}
+
+#[derive(Subcommand, Debug)]
+pub enum Command {
+    /// Run the agent (default if no subcommand given)
+    Run,
+
+    /// Unified setup wizard (replaces `onboard` and `init`)
+    Setup {
+        /// QuickStart mode: sensible defaults, ~3 minutes
+        #[arg(long)]
+        quick: bool,
+
+        /// Re-run only a specific stage (e.g., "database", "channels")
+        #[arg(long)]
+        reconfigure: Option<String>,
+
+        /// Directory to create agent boxes in (default: ~/agents)
+        #[arg(long)]
+        agents_dir: Option<std::path::PathBuf>,
+
+        /// Skip the risk acknowledgment stage
+        #[arg(long)]
+        skip_risk_ack: bool,
+
+        /// Headless mode: read answers from a JSON file (for CI/automation)
+        #[arg(long)]
+        headless: Option<std::path::PathBuf>,
+    },
+
+    /// Manage configuration settings
+    #[command(subcommand)]
+    Config(ConfigCommand),
+
+    /// Browse, install, and publish agent personality templates
+    #[command(subcommand)]
+    Template(TemplateCommand),
+
+    /// Manage WASM tools
+    #[command(subcommand)]
+    Tool(ToolCommand),
+
+    /// Manage MCP servers (hosted tool providers)
+    #[command(subcommand)]
+    Mcp(McpCommand),
+
+    /// Query and manage workspace memory
+    #[command(subcommand)]
+    Memory(MemoryCommand),
+
+    /// DM pairing (approve inbound requests from unknown senders)
+    #[command(subcommand)]
+    Pairing(PairingCommand),
+
+    /// Manage OS service (launchd / systemd)
+    #[command(subcommand)]
+    Service(ServiceCommand),
+
+    /// Lightweight health check (exits 0 if healthy, 1 if not).
+    /// Used by Docker HEALTHCHECK and orchestration probes.
+    Health,
+
+    /// Probe external dependencies and validate configuration
+    Doctor,
+
+    /// Show system health and diagnostics
+    Status,
+
+    /// Manage axiom sharing (share/pull community axioms)
+    #[command(subcommand)]
+    Axiom(AxiomCommand),
+
+    /// Run as a sandboxed worker inside a Docker container (internal use).
+    /// This is invoked automatically by the orchestrator, not by users directly.
+    Worker {
+        /// Job ID to execute.
+        #[arg(long)]
+        job_id: uuid::Uuid,
+
+        /// URL of the orchestrator's internal API.
+        #[arg(long, default_value = "http://host.docker.internal:50051")]
+        orchestrator_url: String,
+
+        /// Maximum iterations before stopping.
+        #[arg(long, default_value = "50")]
+        max_iterations: u32,
+    },
+
+    /// Run a CognitiveAgent (one-shot or interactive REPL mode).
+    CognitiveRun {
+        /// Agent identifier (alphanumeric, hyphens, underscores).
+        #[arg(long)]
+        agent: String,
+
+        /// Base directory for HermitBox storage.
+        #[arg(long, default_value = ".")]
+        r#box: std::path::PathBuf,
+
+        /// Single message (one-shot mode). If omitted, enters interactive REPL.
+        #[arg(long)]
+        message: Option<String>,
+
+        /// Print the system prompt prefix to stderr before running.
+        #[arg(long)]
+        verbose: bool,
+    },
+
+    /// Run as a Claude Code bridge inside a Docker container (internal use).
+    /// Spawns the `claude` CLI and streams output back to the orchestrator.
+    ClaudeBridge {
+        /// Job ID to execute.
+        #[arg(long)]
+        job_id: uuid::Uuid,
+
+        /// URL of the orchestrator's internal API.
+        #[arg(long, default_value = "http://host.docker.internal:50051")]
+        orchestrator_url: String,
+
+        /// Maximum agentic turns for Claude Code.
+        #[arg(long, default_value = "50")]
+        max_turns: u32,
+
+        /// Claude model to use (e.g. "sonnet", "opus").
+        #[arg(long, default_value = "sonnet")]
+        model: String,
+    },
+
+    /// Prepare a Worker job from a Chief's cognitive context (tribe orchestration).
+    Tribe {
+        /// Chief agent identifier.
+        #[arg(long)]
+        chief: String,
+
+        /// Base directory for HermitBox storage.
+        #[arg(long, default_value = ".")]
+        r#box: std::path::PathBuf,
+
+        /// Task description for the Worker.
+        #[arg(long)]
+        task: String,
+    },
+
+    /// List all agent boxes in a directory.
+    Agents {
+        /// Base directory to scan for agent boxes.
+        #[arg(long, default_value = ".")]
+        r#box: std::path::PathBuf,
+    },
+
+    /// Run the curiosity engine: scan for knowledge gaps, manage the research queue.
+    Explore {
+        /// Agent identifier.
+        #[arg(long)]
+        agent: String,
+
+        /// Base directory for HermitBox storage.
+        #[arg(long, default_value = ".")]
+        r#box: std::path::PathBuf,
+
+        /// Show the pending task queue instead of running cycles.
+        #[arg(long)]
+        queue: bool,
+
+        /// Add a manual research topic to the queue.
+        #[arg(long)]
+        add: Option<String>,
+
+        /// Number of curiosity cycles to run (default 1).
+        #[arg(long, default_value = "1")]
+        cycles: u32,
+    },
+
+    /// Start an always-on CognitiveAgent with REPL and optional background curiosity.
+    ///
+    /// With --web, starts the full web gateway (browser UI with SSE/WebSocket).
+    /// With --telegram, loads the Telegram WASM channel.
+    /// Without surface flags, falls back to a simple REPL.
+    Serve {
+        /// Agent identifier (alphanumeric, hyphens, underscores).
+        #[arg(long)]
+        agent: String,
+
+        /// Base directory for HermitBox storage.
+        #[arg(long, default_value = ".")]
+        r#box: std::path::PathBuf,
+
+        /// Disable background curiosity engine.
+        #[arg(long)]
+        no_curiosity: bool,
+
+        /// Curiosity cycle interval in seconds (default: 3600).
+        #[arg(long, default_value = "3600")]
+        curiosity_interval: u64,
+
+        /// Enable web gateway (browser UI with SSE/WebSocket).
+        #[arg(long)]
+        web: bool,
+
+        /// Enable Telegram WASM channel.
+        #[arg(long)]
+        telegram: bool,
+
+        /// Web gateway port (default: 3000).
+        #[arg(long, default_value = "3000")]
+        port: u16,
+    },
+
+    /// Launch the interactive Ratatui TUI with neural canvas demo.
+    Tui,
+
+    /// Self-update Gyre to the latest release.
+    ///
+    /// Downloads the correct binary for your platform from GitHub Releases,
+    /// verifies its SHA256 checksum, and atomically replaces the running binary.
+    ///
+    /// Examples:
+    ///   gyre update           — install latest if newer
+    ///   gyre update --check   — check without installing
+    ///   gyre update --force   — reinstall even if up to date
+    #[command(alias = "evolve")]
+    Update {
+        /// Only check if an update is available; don't download or install.
+        #[arg(long, short = 'c')]
+        check: bool,
+
+        /// Force update even if already on the latest version.
+        #[arg(long, short = 'f')]
+        force: bool,
+
+        /// Allow pre-release (alpha/beta/rc) versions.
+        #[arg(long)]
+        prerelease: bool,
+    },
+
+    /// Show LLM token usage and cost breakdown.
+    ///
+    /// Reads usage history from ~/.gyre/usage.jsonl and displays cost reports
+    /// grouped by model and time period.
+    ///
+    /// Examples:
+    ///   gyre usage              — full cost report
+    ///   gyre usage --config     — show pricing config path
+    Usage {
+        /// Show pricing config path instead of usage report.
+        #[arg(long)]
+        config: bool,
+    },
+
+    /// Manage your Gyre license (activate, status, deactivate).
+    #[command(subcommand)]
+    License(LicenseCommand),
+
+    /// Send a task from one agent to another via the A2A protocol.
+    Send {
+        /// Sender agent identifier.
+        #[arg(long)]
+        from: String,
+
+        /// Recipient agent identifier.
+        #[arg(long)]
+        to: String,
+
+        /// Base directory for HermitBox storage.
+        #[arg(long, default_value = ".")]
+        r#box: std::path::PathBuf,
+
+        /// Task description to send.
+        #[arg(long)]
+        task: String,
+    },
+}
+
+impl Cli {
+    /// Check if we should run the agent (default behavior or explicit `run` command).
+    pub fn should_run_agent(&self) -> bool {
+        matches!(self.command, None | Some(Command::Run))
+    }
+}

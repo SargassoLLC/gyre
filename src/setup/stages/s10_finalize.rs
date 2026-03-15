@@ -1,0 +1,185 @@
+//! Stage 10: Finalization
+//!
+//! Persist config to DB + TOML + .env. Print summary.
+//! Display next command. Track wizard metadata.
+
+use async_trait::async_trait;
+
+use super::{SetupError, SetupStage, StageOutcome};
+use crate::setup::state::SetupState;
+use crate::setup::ui::SetupUi;
+
+pub struct FinalizeStage;
+
+#[async_trait]
+impl SetupStage for FinalizeStage {
+    fn id(&self) -> &'static str {
+        "finalize"
+    }
+
+    fn name(&self) -> &'static str {
+        "Finalization"
+    }
+
+    async fn run(&self, state: &mut SetupState, ui: &SetupUi) -> Result<StageOutcome, SetupError> {
+        ui.info("Saving configuration...");
+
+        // Mark onboarding as complete.
+        state.settings.onboard_completed = true;
+
+        // Write TOML config file.
+        let toml_path = crate::settings::Settings::default_toml_path();
+        state
+            .settings
+            .save_toml(&toml_path)
+            .map_err(|e| SetupError::Validation(e))?;
+        ui.success(&format!("Saved {}", toml_path.display()));
+
+        // Write bootstrap .env file.
+        let env_path = dirs::home_dir()
+            .unwrap_or_else(|| std::path::PathBuf::from("."))
+            .join(".gyre")
+            .join(".env");
+
+        self.write_env_file(&env_path, state)?;
+        ui.success(&format!("Saved {}", env_path.display()));
+
+        // Persist to database if available.
+        #[cfg(feature = "libsql")]
+        if let Some(ref backend) = state.db_backend {
+            use crate::db::Database;
+            let map = state.settings.to_db_map();
+            for (key, value) in &map {
+                if let Err(e) = backend.set_setting("default", key, value).await {
+                    tracing::warn!("Failed to save setting '{}': {}", key, e);
+                }
+            }
+            ui.success("Settings persisted to database.");
+        }
+
+        #[cfg(feature = "postgres")]
+        if let Some(ref pool) = state.db_pool {
+            let map = state.settings.to_db_map();
+            let client = pool
+                .get()
+                .await
+                .map_err(|e| SetupError::Database(format!("Pool error: {}", e)))?;
+
+            for (key, value) in &map {
+                let _ = client
+                    .execute(
+                        "INSERT INTO settings (user_id, key, value) VALUES ($1, $2, $3) \
+                         ON CONFLICT (user_id, key) DO UPDATE SET value = $3",
+                        &[&"default", &key, &value],
+                    )
+                    .await;
+            }
+            ui.success("Settings persisted to database.");
+        }
+
+        // Print summary.
+        ui.blank();
+        ui.header("Configuration Summary");
+
+        if let Some(ref backend) = state.settings.database_backend {
+            ui.info(&format!("Database:  {}", backend));
+        }
+        if let Some(ref llm) = state.settings.llm_backend {
+            ui.info(&format!("LLM:      {}", llm));
+        }
+        if let Some(ref model) = state.settings.selected_model {
+            ui.info(&format!("Model:    {}", model));
+        }
+
+        let agent_count = state.settings.multi_agent.agents.len();
+        if agent_count > 0 {
+            ui.info(&format!("Agents:   {}", agent_count));
+            for agent in &state.settings.multi_agent.agents {
+                let primary = if agent.primary { " (primary)" } else { "" };
+                ui.info(&format!(
+                    "  - {}{}",
+                    agent.name.as_deref().unwrap_or(&agent.id),
+                    primary,
+                ));
+            }
+        }
+
+        if state.settings.gateway.web_enabled {
+            ui.info(&format!(
+                "Gateway:  http://{}:{}",
+                state.settings.gateway.web_host, state.settings.gateway.web_port
+            ));
+        }
+
+        if state.settings.heartbeat.enabled {
+            ui.info(&format!(
+                "Heartbeat: every {} seconds",
+                state.settings.heartbeat.interval_secs
+            ));
+        }
+
+        // Duration.
+        let elapsed = chrono::Utc::now() - state.metadata.started_at;
+        let secs = elapsed.num_seconds();
+        ui.blank();
+        ui.info(&format!(
+            "Setup completed in {}m {}s.",
+            secs / 60,
+            secs % 60
+        ));
+        ui.blank();
+
+        // Next steps.
+        if state.settings.gateway.daemon_enabled {
+            ui.info("Next: run `gyre service start` to start the background daemon.");
+        } else {
+            ui.info("Next: run `gyre run` to start Gyre interactively.");
+        }
+
+        Ok(StageOutcome::Completed)
+    }
+}
+
+impl FinalizeStage {
+    fn write_env_file(&self, path: &std::path::Path, state: &SetupState) -> Result<(), SetupError> {
+        let mut lines = Vec::new();
+
+        lines.push("# Gyre bootstrap configuration".to_string());
+        lines.push("# Generated by `gyre setup`".to_string());
+        lines.push(String::new());
+
+        if let Some(ref backend) = state.settings.database_backend {
+            lines.push(format!("DATABASE_BACKEND={}", backend));
+        }
+
+        if let Some(ref url) = state.settings.database_url {
+            lines.push(format!("DATABASE_URL={}", url));
+        }
+
+        if let Some(ref path) = state.settings.libsql_path {
+            lines.push(format!("LIBSQL_PATH={}", path));
+        }
+
+        if let Some(ref url) = state.settings.libsql_url {
+            lines.push(format!("LIBSQL_URL={}", url));
+        }
+
+        if state.settings.gateway.web_enabled {
+            lines.push(format!("GATEWAY_ENABLED=true"));
+            lines.push(format!("GATEWAY_PORT={}", state.settings.gateway.web_port));
+            lines.push(format!("GATEWAY_HOST={}", state.settings.gateway.web_host));
+            if let Some(ref token) = state.settings.gateway.web_auth_token {
+                lines.push(format!("GATEWAY_AUTH_TOKEN={}", token));
+            }
+        }
+
+        let content = lines.join("\n") + "\n";
+
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).map_err(|e| SetupError::Io(e))?;
+        }
+
+        std::fs::write(path, content).map_err(|e| SetupError::Io(e))?;
+        Ok(())
+    }
+}
