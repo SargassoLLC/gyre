@@ -369,7 +369,13 @@ impl Agent {
                     .await;
 
                 // Fire-and-forget: persist turn to DB
-                self.persist_turn(thread_id, &message.user_id, content, Some(&response));
+                self.persist_turn(
+                    thread_id,
+                    &message.channel,
+                    &message.user_id,
+                    content,
+                    Some(&response),
+                );
 
                 Ok(SubmissionResult::response(response))
             }
@@ -399,7 +405,7 @@ impl Agent {
                 thread.fail_turn(e.to_string());
 
                 // Persist the user message even on failure
-                self.persist_turn(thread_id, &message.user_id, content, None);
+                self.persist_turn(thread_id, &message.channel, &message.user_id, content, None);
 
                 Ok(SubmissionResult::error(e.to_string()))
             }
@@ -410,6 +416,7 @@ impl Agent {
     pub(super) fn persist_turn(
         &self,
         thread_id: Uuid,
+        channel: &str,
         user_id: &str,
         user_input: &str,
         response: Option<&str>,
@@ -419,13 +426,14 @@ impl Agent {
             None => return,
         };
 
+        let channel = channel.to_string();
         let user_id = user_id.to_string();
         let user_input = user_input.to_string();
         let response = response.map(String::from);
 
         tokio::spawn(async move {
             if let Err(e) = store
-                .ensure_conversation(thread_id, "gateway", &user_id, None)
+                .ensure_conversation(thread_id, &channel, &user_id, None)
                 .await
             {
                 tracing::warn!("Failed to ensure conversation {}: {}", thread_id, e);
@@ -644,6 +652,26 @@ impl Agent {
         approved: bool,
         always: bool,
     ) -> Result<SubmissionResult, Error> {
+        // The addressed thread is channel-keyed; an approval sent from a
+        // different channel than the one that asked lands on a different
+        // thread. Resolve to the thread that actually holds the approval.
+        let thread_id = {
+            use crate::agent::session::ApprovalThreadResolution;
+            let sess = session.lock().await;
+            match sess.resolve_approval_thread(thread_id, request_id) {
+                ApprovalThreadResolution::Found(id) => id,
+                ApprovalThreadResolution::NotFound => {
+                    return Ok(SubmissionResult::error("No pending approval request."));
+                }
+                ApprovalThreadResolution::Ambiguous(_) => {
+                    return Ok(SubmissionResult::error(
+                        "Multiple approvals are pending. Include the request ID \
+                         to say which one you are answering.",
+                    ));
+                }
+            }
+        };
+
         // Get thread state and pending approval
         let (_thread_state, pending) = {
             let mut sess = session.lock().await;
