@@ -813,6 +813,10 @@ pub struct AgentConfig {
     pub max_cost_per_day_cents: Option<u64>,
     /// Maximum LLM/tool actions per hour. None = unlimited.
     pub max_actions_per_hour: Option<u64>,
+    /// How many workspace memories to auto-recall into each turn's
+    /// context (hybrid search on the incoming message). 0 disables
+    /// auto-recall; the model can still call memory_search explicitly.
+    pub memory_auto_recall_top_k: usize,
 }
 
 impl AgentConfig {
@@ -905,6 +909,7 @@ impl AgentConfig {
                     key: "MAX_ACTIONS_PER_HOUR".to_string(),
                     message: format!("must be a positive integer: {e}"),
                 })?,
+            memory_auto_recall_top_k: parse_optional_env("MEMORY_AUTO_RECALL_TOP_K", 3)?,
         })
     }
 }

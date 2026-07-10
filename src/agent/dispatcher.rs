@@ -118,6 +118,29 @@ impl Agent {
             }
         }
 
+        // 2.5 Ambient memory recall — surface relevant workspace memories
+        // into the turn. This is the RETRIEVAL half of the memory system:
+        // without it the workspace only writes and the agent never sees
+        // what it knows unless it thinks to call memory_search itself.
+        if self.config.memory_auto_recall_top_k > 0
+            && let Some(ws) = self.workspace()
+        {
+            match ws
+                .search(&message.content, self.config.memory_auto_recall_top_k)
+                .await
+            {
+                Ok(results) if !results.is_empty() => {
+                    composite_prompt_parts.push(format_recalled_memories(&results));
+                }
+                Ok(_) => {}
+                Err(e) => {
+                    // Recall is best-effort: a search failure must never
+                    // block the turn.
+                    tracing::debug!("Auto-recall search failed: {}", e);
+                }
+            }
+        }
+
         // 3. Workspace identity files (AGENTS.md, SOUL.md, etc.)
         if let Some(prompt) = system_prompt {
             composite_prompt_parts.push(prompt);
@@ -629,11 +652,78 @@ pub(super) fn detect_auth_awaiting(
     Some((name, instructions))
 }
 
+/// Per-excerpt character cap for recalled memories. A structural size
+/// limit only — relevance judgment stays with the model.
+const RECALL_EXCERPT_MAX_CHARS: usize = 600;
+
+/// Format workspace search results as a recalled-memories context block.
+pub(super) fn format_recalled_memories(results: &[crate::workspace::SearchResult]) -> String {
+    let mut block = String::from(
+        "<recalled_memories>\n\
+         Memories recalled from your persistent workspace based on the \
+         current message. They may or may not be relevant — use your \
+         judgment, and ignore anything that doesn't apply.\n",
+    );
+
+    for result in results {
+        let end = crate::util::floor_char_boundary(&result.content, RECALL_EXCERPT_MAX_CHARS);
+        let excerpt = &result.content[..end];
+        let ellipsis = if end < result.content.len() {
+            "…"
+        } else {
+            ""
+        };
+        block.push_str(&format!(
+            "\n<memory score=\"{:.2}\">\n{}{}\n</memory>\n",
+            result.score, excerpt, ellipsis
+        ));
+    }
+
+    block.push_str("</recalled_memories>");
+    block
+}
+
 #[cfg(test)]
 mod tests {
     use crate::error::Error;
 
     use super::detect_auth_awaiting;
+    use super::format_recalled_memories;
+    use crate::workspace::SearchResult;
+
+    fn result_with(content: &str, score: f32) -> SearchResult {
+        SearchResult {
+            document_id: uuid::Uuid::new_v4(),
+            chunk_id: uuid::Uuid::new_v4(),
+            content: content.to_string(),
+            score,
+            fts_rank: Some(1),
+            vector_rank: None,
+        }
+    }
+
+    #[test]
+    fn test_format_recalled_memories_basic() {
+        let results = vec![
+            result_with("User prefers dark mode", 0.87),
+            result_with("Project alpha ships Friday", 0.42),
+        ];
+        let block = format_recalled_memories(&results);
+        assert!(block.starts_with("<recalled_memories>"));
+        assert!(block.ends_with("</recalled_memories>"));
+        assert!(block.contains("User prefers dark mode"));
+        assert!(block.contains("score=\"0.87\""));
+        assert!(block.contains("Project alpha ships Friday"));
+    }
+
+    #[test]
+    fn test_format_recalled_memories_truncates_long_excerpts() {
+        let long = "x".repeat(2_000);
+        let block = format_recalled_memories(&[result_with(&long, 0.5)]);
+        assert!(block.contains('…'));
+        // 600 chars of excerpt plus wrapper — nowhere near 2000.
+        assert!(block.len() < 1_000);
+    }
 
     #[test]
     fn test_detect_auth_awaiting_positive() {

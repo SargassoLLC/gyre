@@ -1,0 +1,52 @@
+{
+  "name": "brain-pipeline",
+  "version": "0.1.0",
+  "description": "Nightly four-stage memory cycle: ingest today's activity, consolidate what's worth keeping, surface what matters each morning, and distill the old.",
+  "required_tools": ["memory_search", "memory_write", "memory_read", "memory_tree"],
+  "routines": [
+    {
+      "name": "brain-ingest",
+      "trigger": { "type": "cron", "schedule": "0 0 23 * * *" },
+      "action": {
+        "type": "full_job",
+        "title": "Conversation Ingest",
+        "description": "See prompts/ingest.md"
+      },
+      "guardrails": { "cooldown_secs": 3600, "max_concurrent": 1 },
+      "notify": { "on_attention": false, "on_failure": true, "on_success": false }
+    },
+    {
+      "name": "brain-consolidate",
+      "trigger": { "type": "cron", "schedule": "0 0 2 * * *" },
+      "action": {
+        "type": "full_job",
+        "title": "Memory Consolidation",
+        "description": "See prompts/consolidate.md"
+      },
+      "guardrails": { "cooldown_secs": 3600, "max_concurrent": 1 },
+      "notify": { "on_attention": false, "on_failure": true, "on_success": false }
+    },
+    {
+      "name": "brain-surface",
+      "trigger": { "type": "cron", "schedule": "0 0 6 * * *" },
+      "action": {
+        "type": "lightweight",
+        "prompt": "See prompts/surface.md",
+        "context_paths": ["surface/candidates.md", "context/priorities.md"]
+      },
+      "guardrails": { "cooldown_secs": 3600, "max_concurrent": 1 },
+      "notify": { "on_attention": true, "on_failure": true, "on_success": false }
+    },
+    {
+      "name": "brain-distill",
+      "trigger": { "type": "cron", "schedule": "0 30 23 * * SUN" },
+      "action": {
+        "type": "full_job",
+        "title": "Drain Distillation",
+        "description": "See prompts/distill.md"
+      },
+      "guardrails": { "cooldown_secs": 3600, "max_concurrent": 1 },
+      "notify": { "on_attention": false, "on_failure": true, "on_success": false }
+    }
+  ]
+}
