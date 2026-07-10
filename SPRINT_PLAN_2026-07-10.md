@@ -1,6 +1,7 @@
 # Gyre Sprint Plan — 2026-07-10 (Tier 1 + Tier 2, v0.3.0)
 
 **Status:** awaiting "go" from Greg
+**Rev 2 (same day):** validated against a full Lyzr.ai feature sweep (see `COMPETITIVE-lyzr-2026-07-10.md`) and the Sargasso repositioning plan (`~/kimi/sargasso/00_Strategy/reposition-plan-2026-07-10.md`). Changes from Rev 1 are in the "Rev 2 — holistic product revisions" section at the bottom; the table and estimates below are updated in place where affected.
 **Model:** Fable 5 | **Repo state:** 2 commits (`bcd7d62` beta.1 initial, `96d1d0e` test fix)
 **Build health:** `cargo build` ✅, full test suite **1,445 passed / 0 failed** (after fixing a test-compile error + 4 latent fixture bugs in `src/safety/leak_detector.rs`)
 
@@ -65,3 +66,19 @@ Extra: `HEARTBEAT_OK`/`ROUTINE_OK` sentinels use `contains()` — audit Theme B 
 
 **Implementation order (commit after every item; stub + IMPLEMENTATION_NOTES.md if quota runs short):**
 1.1 → 1.5 → 1.2 (+sentinel fix) → 1.3 → 1.4 → 1.6 → **2.4** → 2.3 → 2.1 → 2.2
+
+---
+
+## Rev 2 — holistic product revisions (after Lyzr sweep, 2026-07-10)
+
+Lyzr ($100M Series B, "enterprise agentic OS") is structurally unable to serve Gyre's segment: they are request-driven enterprise workflow agents at $0.03–0.08/agent-run, sold top-down, cloud/VPC only. Nothing in their stack is local-first, ambient/proactive, personal, or flat-cost. Gyre's "the AI OS" claim lives exactly there — the same capture-what-they-can't-serve strategy as Sargasso's services repositioning. Full analysis: `COMPETITIVE-lyzr-2026-07-10.md`.
+
+**Plan changes:**
+1. **Tier 1 unchanged** — Lyzr sells "durable execution, exactly-once"; reliability is table stakes in this category.
+2. **2.2 is now a product pillar, not just a fix:** native `EgressPolicy` layer + surfaced audit/decision log (Gyre already event-sources `job_actions`) = "Responsible AI, local-first" — the direct answer to Lyzr's #1 differentiator. Native-Rust route confirmed over Brex proxy port.
+3. **Blueprint format:** `examples/` ships with one consistent structure (manifest + SKILL.md + routine configs + prompts). Brain Pipeline, Research Fan-Out, Novelty Gate = blueprints #1–3 of a growable library (Lyzr's 200-blueprint moat is the pattern to seed against). ~1 hour extra structure.
+4. **Brain Pipeline stays Tier-2 #1** — must beat Cognis/KG-aaS on "actually works end-to-end locally" or the ambient claim collapses on comparison.
+5. **Explicit non-goals (Lyzr's turf + Bitter-Lesson violations):** no-code builder, SSO/RBAC/multi-tenancy, evals/simulation engine, toxicity/bias classifier stacks (shadow supervisors, audit rule 7), multi-framework control plane. Web-gateway run-trace/cost polish is real but Tier 3/6.
+6. **Sargasso synergy (note, not scope):** the Docker Compose client-deployment template in the reposition plan (Gap 1) and Gyre's sandbox/orchestrator infra should converge post-v0.3 — one deployable "agent box" serves both the product and the services delivery motion.
+
+Implementation order unchanged.
