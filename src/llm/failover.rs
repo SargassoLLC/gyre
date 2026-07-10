@@ -309,10 +309,20 @@ impl LlmProvider for FailoverProvider {
         self.providers[self.last_used.load(Ordering::Relaxed)].active_model_name()
     }
 
+    /// Set the active model on the PRIMARY provider only.
+    ///
+    /// An explicitly requested model means "first in the failover chain",
+    /// not "only provider": fallback providers keep their own configured
+    /// models so cross-backend failover still works after a model switch.
+    /// (Propagating the model to every provider would overwrite e.g. an
+    /// OpenAI fallback's model with an Anthropic ID, silently killing the
+    /// fallback chain.)
     fn set_model(&self, model: &str) -> Result<(), LlmError> {
-        for provider in &self.providers {
-            provider.set_model(model)?;
-        }
+        self.providers[0].set_model(model)?;
+        // Requests always try providers in order starting from the primary,
+        // but model_name()/cost_per_token() report via last_used — reset it
+        // so they reflect the provider the user just configured.
+        self.last_used.store(0, Ordering::Relaxed);
         Ok(())
     }
 
@@ -1055,11 +1065,12 @@ mod tests {
         assert_eq!(cd.cooldown_activated_nanos.load(Ordering::Relaxed), 1);
     }
 
-    // Test: set_model propagates to all providers and active_model_name reflects change.
+    // Test: set_model applies to the primary ONLY; fallback providers keep
+    // their configured models so cross-backend failover survives a switch.
     #[test]
-    fn set_model_propagates_to_all_providers() {
+    fn set_model_applies_to_primary_only() {
         let p1: Arc<MockProvider> = Arc::new(MockProvider::succeeding("model-a", "ok"));
-        let p2: Arc<MockProvider> = Arc::new(MockProvider::succeeding("model-b", "ok"));
+        let p2: Arc<MockProvider> = Arc::new(MockProvider::succeeding("fallback-model", "ok"));
 
         let failover = FailoverProvider::new(vec![
             Arc::clone(&p1) as Arc<dyn LlmProvider>,
@@ -1073,11 +1084,56 @@ mod tests {
         // Switch model.
         failover.set_model("new-model").unwrap();
 
-        // Both inner providers should reflect the change.
+        // Primary reflects the change; the fallback keeps its own model.
         assert_eq!(p1.active_model_name(), "new-model");
-        assert_eq!(p2.active_model_name(), "new-model");
+        assert_eq!(p2.active_model_name(), "fallback-model");
 
         // FailoverProvider itself should report the new model.
+        assert_eq!(failover.active_model_name(), "new-model");
+    }
+
+    // Test: after an explicit model switch, the fallback chain still works.
+    // This is the production bug: setting an explicit primary model must
+    // NOT disable failover.
+    #[tokio::test]
+    async fn failover_still_works_after_set_model() {
+        let p1 = Arc::new(MockProvider::failing_retryable("primary"));
+        let p2 = Arc::new(MockProvider::succeeding("fallback", "fallback response"));
+
+        let failover = FailoverProvider::new(vec![
+            Arc::clone(&p1) as Arc<dyn LlmProvider>,
+            Arc::clone(&p2) as Arc<dyn LlmProvider>,
+        ])
+        .unwrap();
+
+        failover.set_model("explicit-model").unwrap();
+
+        // Primary fails with a retryable error; the fallback must still be
+        // tried and serve the request on its own configured model.
+        let response = failover.complete(make_request()).await.unwrap();
+        assert_eq!(response.content, "fallback response");
+        assert_eq!(p2.active_model_name(), "fallback");
+    }
+
+    // Test: set_model resets last_used so model_name/cost reporting reflects
+    // the primary the user just configured, not a stale fallback.
+    #[tokio::test]
+    async fn set_model_resets_last_used_to_primary() {
+        let p1 = Arc::new(MockProvider::failing_retryable("primary-model"));
+        let p2 = Arc::new(MockProvider::succeeding("fallback-model", "ok"));
+
+        let failover = FailoverProvider::new(vec![
+            Arc::clone(&p1) as Arc<dyn LlmProvider>,
+            Arc::clone(&p2) as Arc<dyn LlmProvider>,
+        ])
+        .unwrap();
+
+        // Drive a failover so last_used points at the fallback (index 1).
+        let _ = failover.complete(make_request()).await.unwrap();
+        assert_eq!(failover.model_name(), "fallback-model");
+
+        // Switching models should re-point reporting at the primary.
+        failover.set_model("new-model").unwrap();
         assert_eq!(failover.active_model_name(), "new-model");
     }
 }
