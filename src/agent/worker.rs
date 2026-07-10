@@ -387,7 +387,7 @@ Report when the job is complete or if you encounter issues you cannot resolve."#
         // parameter combinations always require a human, trust or not.
         if tool.requires_approval() {
             let hook_trusted = deps.hooks.is_tool_trusted(tool_name).await;
-            if !hook_trusted || tool.requires_approval_for(&params) {
+            if !hook_trusted || tool.requires_approval_for(params) {
                 return Err(crate::error::ToolError::AuthRequired {
                     name: tool_name.to_string(),
                 }
