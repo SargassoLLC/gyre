@@ -1,0 +1,54 @@
+{
+  "_comment": "Copy this file to your workspace at research/config/watch-topics.json and edit to reflect your topics. The pipeline reads this at runtime — changes take effect on the next run.",
+  "pools": [
+    {
+      "id": "industry",
+      "label": "Your Industry",
+      "topics": [
+        "Recent developments in [your industry or sector]",
+        "Regulatory changes affecting [your industry]",
+        "Funding rounds or acquisitions in [your industry]",
+        "New product launches or major partnerships in [your industry]"
+      ],
+      "sources": [
+        "industry trade publications",
+        "major news outlets",
+        "company press releases",
+        "analyst reports"
+      ]
+    },
+    {
+      "id": "tools-stack",
+      "label": "Tools & Stack",
+      "topics": [
+        "New releases or breaking changes in [your primary programming language]",
+        "Updates to [key frameworks or libraries you depend on]",
+        "Security vulnerabilities in [tools you use]",
+        "New capabilities in [your AI/ML tools or APIs]"
+      ],
+      "sources": [
+        "official changelogs and release notes",
+        "GitHub announcements",
+        "developer blogs",
+        "Hacker News",
+        "technical newsletters"
+      ]
+    },
+    {
+      "id": "local-area",
+      "label": "Local Area",
+      "topics": [
+        "Local business openings and closures in [your city/neighborhood]",
+        "City council decisions or zoning changes in [your area]",
+        "Infrastructure projects or transportation updates in [your area]",
+        "Community events or local news in [your area]"
+      ],
+      "sources": [
+        "local newspaper websites",
+        "city government announcements",
+        "neighborhood blogs or forums",
+        "local business journals"
+      ]
+    }
+  ]
+}

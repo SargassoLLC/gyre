@@ -1,0 +1,56 @@
+{
+  "name": "research-fanout",
+  "version": "0.1.0",
+  "description": "Nightly research pipeline: harvest recent developments across configurable topic pools, adversarially verify each finding, store confirmed results to memory, and deliver a clean digest notification.",
+  "required_tools": [
+    "memory_search",
+    "memory_write",
+    "memory_read"
+  ],
+  "routines": [
+    {
+      "name": "research-harvest",
+      "trigger": {
+        "type": "cron",
+        "schedule": "0 6 * * *"
+      },
+      "action": {
+        "type": "full_job",
+        "title": "Research Fan-Out — Harvest & Verify",
+        "description": "See prompts/harvest.md",
+        "max_iterations": 20
+      },
+      "guardrails": {
+        "cooldown_secs": 43200,
+        "max_concurrent": 1
+      },
+      "notify": {
+        "on_attention": true,
+        "on_failure": true,
+        "on_success": false
+      }
+    },
+    {
+      "name": "research-digest",
+      "trigger": {
+        "type": "cron",
+        "schedule": "30 6 * * *"
+      },
+      "action": {
+        "type": "full_job",
+        "title": "Research Fan-Out — Digest & Notify",
+        "description": "See prompts/digest.md",
+        "max_iterations": 10
+      },
+      "guardrails": {
+        "cooldown_secs": 43200,
+        "max_concurrent": 1
+      },
+      "notify": {
+        "on_attention": true,
+        "on_failure": true,
+        "on_success": false
+      }
+    }
+  ]
+}
