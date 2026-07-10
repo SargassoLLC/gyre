@@ -385,8 +385,9 @@ impl Agent {
             if rt_config.enabled {
                 if let (Some(store), Some(workspace)) = (self.store(), self.workspace()) {
                     // Set up notification channel (same pattern as heartbeat)
-                    let (notify_tx, mut notify_rx) =
-                        tokio::sync::mpsc::channel::<OutgoingResponse>(32);
+                    let (notify_tx, mut notify_rx) = tokio::sync::mpsc::channel::<
+                        crate::agent::routine_engine::RoutineNotification,
+                    >(32);
 
                     let engine = Arc::new(RoutineEngine::new(
                         rt_config.clone(),
@@ -404,24 +405,44 @@ impl Agent {
                     // Load initial event cache
                     engine.refresh_event_cache().await;
 
-                    // Spawn notification forwarder
+                    // Spawn notification forwarder. The routine's configured
+                    // delivery target travels with the notification: try the
+                    // targeted channel first, fall back to broadcasting on all
+                    // channels only when no target is set or targeted delivery
+                    // fails (same pattern as heartbeat).
                     let channels = self.channels.clone();
                     tokio::spawn(async move {
-                        while let Some(response) = notify_rx.recv().await {
-                            let user = response
-                                .metadata
-                                .get("notify_user")
-                                .and_then(|v| v.as_str())
-                                .unwrap_or("default")
-                                .to_string();
-                            let results = channels.broadcast_all(&user, response).await;
-                            for (ch, result) in results {
-                                if let Err(e) = result {
-                                    tracing::warn!(
-                                        "Failed to broadcast routine notification to {}: {}",
-                                        ch,
-                                        e
-                                    );
+                        while let Some(notification) = notify_rx.recv().await {
+                            let user = notification.user;
+                            let response = notification.response;
+
+                            let targeted_ok = if let Some(ref channel) = notification.channel {
+                                match channels.broadcast(channel, &user, response.clone()).await {
+                                    Ok(()) => true,
+                                    Err(e) => {
+                                        tracing::warn!(
+                                            "Targeted routine notification to '{}' failed \
+                                             ({}), falling back to broadcast",
+                                            channel,
+                                            e
+                                        );
+                                        false
+                                    }
+                                }
+                            } else {
+                                false
+                            };
+
+                            if !targeted_ok {
+                                let results = channels.broadcast_all(&user, response).await;
+                                for (ch, result) in results {
+                                    if let Err(e) = result {
+                                        tracing::warn!(
+                                            "Failed to broadcast routine notification to {}: {}",
+                                            ch,
+                                            e
+                                        );
+                                    }
                                 }
                             }
                         }

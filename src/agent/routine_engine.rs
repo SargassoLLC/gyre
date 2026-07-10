@@ -19,6 +19,7 @@ use regex::Regex;
 use tokio::sync::{RwLock, mpsc};
 use uuid::Uuid;
 
+use crate::agent::attention::{ATTENTION_FORMAT_INSTRUCTIONS, parse_attention_report};
 use crate::agent::routine::{
     NotifyConfig, Routine, RoutineAction, RoutineRun, RunStatus, Trigger, next_cron_fire,
 };
@@ -28,6 +29,23 @@ use crate::db::Database;
 use crate::llm::{ChatMessage, CompletionRequest, FinishReason, LlmProvider};
 use crate::workspace::Workspace;
 
+/// A routine notification with its delivery target attached.
+///
+/// The target travels WITH the notification through the whole delivery
+/// path (including any LLM failover that happened during execution) —
+/// previously only the message content was forwarded and the configured
+/// channel/user were dropped at the first hop, so cron output was
+/// broadcast blindly to all channels.
+#[derive(Debug, Clone)]
+pub struct RoutineNotification {
+    /// Channel to deliver on. `None` = broadcast to all channels.
+    pub channel: Option<String>,
+    /// User to deliver to.
+    pub user: String,
+    /// The message itself.
+    pub response: OutgoingResponse,
+}
+
 /// The routine execution engine.
 pub struct RoutineEngine {
     config: RoutineConfig,
@@ -35,7 +53,7 @@ pub struct RoutineEngine {
     llm: Arc<dyn LlmProvider>,
     workspace: Arc<Workspace>,
     /// Sender for notifications (routed to channel manager).
-    notify_tx: mpsc::Sender<OutgoingResponse>,
+    notify_tx: mpsc::Sender<RoutineNotification>,
     /// Currently running routine count (across all routines).
     running_count: Arc<AtomicUsize>,
     /// Compiled event regex cache: routine_id -> compiled regex.
@@ -48,7 +66,7 @@ impl RoutineEngine {
         store: Arc<dyn Database>,
         llm: Arc<dyn LlmProvider>,
         workspace: Arc<Workspace>,
-        notify_tx: mpsc::Sender<OutgoingResponse>,
+        notify_tx: mpsc::Sender<RoutineNotification>,
     ) -> Self {
         Self {
             config,
@@ -296,7 +314,7 @@ struct EngineContext {
     store: Arc<dyn Database>,
     llm: Arc<dyn LlmProvider>,
     workspace: Arc<Workspace>,
-    notify_tx: mpsc::Sender<OutgoingResponse>,
+    notify_tx: mpsc::Sender<RoutineNotification>,
     running_count: Arc<AtomicUsize>,
     max_lightweight_tokens: u32,
 }
@@ -429,10 +447,8 @@ async fn execute_lightweight(
         full_prompt.push_str(state);
     }
 
-    full_prompt.push_str(
-        "\n\n---\n\nIf nothing needs attention, reply EXACTLY with: ROUTINE_OK\n\
-         If something needs attention, provide a concise summary.",
-    );
+    full_prompt.push_str("\n\n---\n\n");
+    full_prompt.push_str(ATTENTION_FORMAT_INSTRUCTIONS);
 
     // Get system prompt
     let system_prompt = match ctx.workspace.system_prompt().await {
@@ -487,17 +503,22 @@ async fn execute_lightweight(
         };
     }
 
-    // Check for the "nothing to do" sentinel
-    if content == "ROUTINE_OK" || content.contains("ROUTINE_OK") {
-        return Ok((RunStatus::Ok, None, tokens_used));
+    // Structured check-in: {"needs_attention": bool, "summary": "..."}.
+    // Unparseable output fails open to Attention with the raw content.
+    let report = parse_attention_report(content);
+    if report.needs_attention {
+        Ok((RunStatus::Attention, report.summary, tokens_used))
+    } else {
+        Ok((RunStatus::Ok, None, tokens_used))
     }
-
-    Ok((RunStatus::Attention, Some(content.to_string()), tokens_used))
 }
 
 /// Send a notification based on the routine's notify config and run status.
+///
+/// The notify target (channel + user) is attached to the notification so
+/// the forwarder can deliver it to the routine's configured destination.
 async fn send_notification(
-    tx: &mpsc::Sender<OutgoingResponse>,
+    tx: &mpsc::Sender<RoutineNotification>,
     notify: &NotifyConfig,
     routine_name: &str,
     status: RunStatus,
@@ -536,7 +557,13 @@ async fn send_notification(
         }),
     };
 
-    if let Err(e) = tx.send(response).await {
+    let notification = RoutineNotification {
+        channel: notify.channel.clone(),
+        user: notify.user.clone(),
+        response,
+    };
+
+    if let Err(e) = tx.send(notification).await {
         tracing::error!(routine = %routine_name, "Failed to send notification: {}", e);
     }
 }

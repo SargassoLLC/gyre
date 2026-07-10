@@ -5,8 +5,8 @@
 //! 2. Runs an agent turn to process the checklist
 //! 3. Reports any findings to the configured channel
 //!
-//! If nothing needs attention, the agent replies "HEARTBEAT_OK" and no
-//! message is sent to the user.
+//! If nothing needs attention, the agent reports `needs_attention: false`
+//! (structured JSON check-in) and no message is sent to the user.
 //!
 //! # Usage
 //!
@@ -28,6 +28,7 @@ use std::time::Duration;
 
 use tokio::sync::mpsc;
 
+use crate::agent::attention::{ATTENTION_FORMAT_INSTRUCTIONS, parse_attention_report};
 use crate::channels::OutgoingResponse;
 use crate::llm::{ChatMessage, CompletionRequest, FinishReason, LlmProvider};
 use crate::workspace::Workspace;
@@ -188,14 +189,12 @@ impl HeartbeatRunner {
             "Read the HEARTBEAT.md checklist below and follow it strictly. \
              Do not infer or repeat old tasks. Check each item and report findings.\n\
              \n\
-             If nothing needs attention, reply EXACTLY with: HEARTBEAT_OK\n\
-             \n\
-             If something needs attention, provide a concise summary of what needs action.\n\
+             {}\n\
              \n\
              ## HEARTBEAT.md\n\
              \n\
              {}",
-            checklist
+            ATTENTION_FORMAT_INSTRUCTIONS, checklist
         );
 
         // Get the system prompt for context
@@ -259,12 +258,16 @@ impl HeartbeatRunner {
             };
         }
 
-        // Check if nothing needs attention
-        if content == "HEARTBEAT_OK" || content.contains("HEARTBEAT_OK") {
-            return HeartbeatResult::Ok;
+        // Structured check-in: {"needs_attention": bool, "summary": "..."}.
+        // Unparseable output fails open to NeedsAttention with raw content.
+        let report = parse_attention_report(content);
+        if report.needs_attention {
+            HeartbeatResult::NeedsAttention(
+                report.summary.unwrap_or_else(|| content.to_string()),
+            )
+        } else {
+            HeartbeatResult::Ok
         }
-
-        HeartbeatResult::NeedsAttention(content.to_string())
     }
 
     /// Send a notification about heartbeat findings.
