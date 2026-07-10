@@ -82,3 +82,18 @@ Lyzr ($100M Series B, "enterprise agentic OS") is structurally unable to serve G
 6. **Sargasso synergy (note, not scope):** the Docker Compose client-deployment template in the reposition plan (Gap 1) and Gyre's sandbox/orchestrator infra should converge post-v0.3 — one deployable "agent box" serves both the product and the services delivery motion.
 
 Implementation order unchanged.
+
+---
+
+## Rev 3 — simulation absorbed; non-goals refined (Greg pushback, 2026-07-10)
+
+**Simulation/Agent Eval: IN (was wrongly grouped with non-goals).** It passes every audit rule: leverages computation (LLM-generated scenarios + LLM-judge scoring, no hand-coded rubrics), and the 10x test says better models make it *more* valuable. It's CI for agents. Gyre already has the seed — `src/evaluation/` (`SuccessEvaluator`, `LlmEvaluator`, `MetricsCollector`), currently only wired into job execution.
+
+- **v0.4 (full):** `gyre blueprint test <name>` — generate N synthetic scenarios for a routine/blueprint, dry-run, score with `LlmEvaluator`, report a readiness verdict before the user enables the cron. Pre-flight trust for an OS that acts while you sleep; nobody has this local-first.
+- **This sprint (optional thin slice, Greg's call):** `gyre routine test` — single dry-run, no notifications/writes, LLM-judge verdict. ~M, ~40-60k tokens, builds entirely on existing evaluation module. Slots after 2.3 in the order if approved.
+
+**Reframed (already have it, differently shaped — say so in positioning):**
+- *Architect (NL→agent):* `routine_create` tools + dynamic tool builder = you talk to the OS and it builds the agent. Model-as-builder, not form wizard.
+- *AgentMesh:* 1.6 `sessions_send` + orchestrator is the embryo.
+
+**Still non-goals, with reasons:** toxicity/bias classifier stacks (shadow supervisors — audit rule 7; egress boundary + HITL + decision logs cover the real risk); SSO/RBAC/multi-tenancy (services isolation model is one-Gyre-box-per-client — stronger than RBAC, zero identity infra); multi-framework control plane (Lyzr vs LangChain enterprise fight, irrelevant to a personal OS).
