@@ -50,8 +50,8 @@ pub struct RoutineNotification {
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct RoutineTestReport {
     pub routine_name: String,
-    /// Dry-run outcome: "ok" | "attention" | "failed".
-    pub run_status: String,
+    /// Dry-run outcome.
+    pub run_status: RunStatus,
     /// The routine's output (None when it reported nothing to do).
     pub output_summary: Option<String>,
     pub tokens_used: Option<i32>,
@@ -87,12 +87,7 @@ fn parse_readiness_verdict(content: &str) -> ReadinessVerdict {
     }
 
     let trimmed = content.trim();
-    let candidate = trimmed
-        .strip_prefix("```json")
-        .or_else(|| trimmed.strip_prefix("```"))
-        .and_then(|s| s.strip_suffix("```"))
-        .map(str::trim)
-        .unwrap_or(trimmed);
+    let candidate = crate::agent::attention::strip_code_fence(trimmed);
 
     match serde_json::from_str::<Wire>(candidate) {
         Ok(w) => ReadinessVerdict {
@@ -443,7 +438,7 @@ impl RoutineEngine {
 
         Ok(RoutineTestReport {
             routine_name: routine.name.clone(),
-            run_status: status.to_string(),
+            run_status: status,
             output_summary: summary,
             tokens_used: tokens,
             ready: verdict.ready,

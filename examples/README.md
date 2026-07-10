@@ -28,7 +28,7 @@ The manifest declares everything Gyre needs to install and wire up the blueprint
   "routines": [
     {
       "name": "my-routine",
-      "trigger": { "type": "cron", "schedule": "0 8 * * *" },
+      "trigger": { "type": "cron", "schedule": "0 0 8 * * *" },
       "action": {
         "type": "full_job",
         "title": "My Routine",

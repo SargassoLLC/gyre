@@ -803,7 +803,7 @@ Proactive periodic execution (default: 30 minutes):
 1. Reads `HEARTBEAT.md` checklist
 2. Runs agent turn with checklist prompt
 3. If findings, notifies via channel
-4. If nothing, agent replies "HEARTBEAT_OK" (no notification)
+4. If nothing, agent reports `{"needs_attention": false}` in its structured check-in (no notification)
 
 ```rust
 use crate::agent::{HeartbeatConfig, spawn_heartbeat};

@@ -77,8 +77,9 @@ pub fn parse_attention_report(content: &str) -> AttentionReport {
 }
 
 /// Strip a surrounding Markdown code fence (``` or ```json) if present.
-/// Structural unwrapping only — no content inspection.
-fn strip_code_fence(s: &str) -> &str {
+/// Structural unwrapping only — no content inspection. Shared by the
+/// attention and readiness-verdict parsers.
+pub(crate) fn strip_code_fence(s: &str) -> &str {
     let Some(rest) = s.strip_prefix("```") else {
         return s;
     };

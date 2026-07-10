@@ -12,7 +12,7 @@
       "name": "research-harvest",
       "trigger": {
         "type": "cron",
-        "schedule": "0 6 * * *"
+        "schedule": "0 0 6 * * *"
       },
       "action": {
         "type": "full_job",
@@ -34,7 +34,7 @@
       "name": "research-digest",
       "trigger": {
         "type": "cron",
-        "schedule": "30 6 * * *"
+        "schedule": "0 30 6 * * *"
       },
       "action": {
         "type": "full_job",
