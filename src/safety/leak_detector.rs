@@ -529,9 +529,9 @@ mod tests {
     #[test]
     fn test_detect_openai_key() {
         let detector = LeakDetector::new();
-        let content = ["API key: sk-TEST", "ONLY-abc123def456ghi789jkl012mno345pqr", "T3Bl", "bkFJtest123"].join("");
+        let content = ["API key: sk-TEST", "ONLYabc123def456ghi789jkl012mno345pqr", "T3Bl", "bkFJtest123"].join("");
 
-        let result = detector.scan(content);
+        let result = detector.scan(&content);
         assert!(!result.is_clean());
         assert!(result.should_block);
         assert!(
@@ -614,7 +614,7 @@ mod tests {
     #[test]
     fn test_scan_and_clean_blocks() {
         let detector = LeakDetector::new();
-        let content = "sk-TESTONLY-test1234567890abcdefghij";
+        let content = "sk-TESTONLYtest1234567890abcdefghij";
 
         let result = detector.scan_and_clean(content);
         assert!(result.is_err());
@@ -701,7 +701,7 @@ mod tests {
         let detector = LeakDetector::new();
 
         // Attempt to exfiltrate in request body
-        let body = b"{\"stolen\": \"sk-TESTONLY-test1234567890abcdefghij\"}";
+        let body = b"{\"stolen\": \"sk-TESTONLYtest1234567890abcdefghij\"}";
         let result = detector.scan_http_request("https://api.example.com/webhook", &[], Some(body));
         assert!(result.is_err());
     }
@@ -713,7 +713,7 @@ mod tests {
         // Attacker prepends a non-UTF8 byte to bypass strict from_utf8 check.
         // The lossy conversion should still detect the secret.
         let mut body = vec![0xFF]; // invalid UTF-8 leading byte
-        body.extend_from_slice(b"sk-TESTONLY-test1234567890abcdefghij");
+        body.extend_from_slice(b"sk-TESTONLYtest1234567890abcdefghij");
 
         let result = detector.scan_http_request("https://api.example.com/exfil", &[], Some(&body));
         assert!(result.is_err(), "binary body should still be scanned");
