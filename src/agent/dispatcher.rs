@@ -292,11 +292,14 @@ impl Agent {
                         if let Some(tool) = self.tools().get(&tc.name).await
                             && tool.requires_approval()
                         {
-                            // Check if auto-approved for this session
+                            // Check if auto-approved for this session, or
+                            // vouched for by a registered hook (grants are
+                            // unioned across hooks — additive, never dropped
+                            // by composition).
                             let mut is_auto_approved = {
                                 let sess = session.lock().await;
                                 sess.is_tool_auto_approved(&tc.name)
-                            };
+                            } || self.hooks().is_tool_trusted(&tc.name).await;
 
                             // Override auto-approval for destructive parameters
                             // (e.g. `rm -rf`, `git push --force` in shell commands).

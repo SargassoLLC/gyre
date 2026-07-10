@@ -198,12 +198,14 @@ impl Scheduler {
                 let tools = self.tools.clone();
                 let context_manager = self.context_manager.clone();
                 let safety = self.safety.clone();
+                let hooks = self.hooks.clone();
 
                 tokio::spawn(async move {
                     let result = Self::execute_tool_task(
                         tools,
                         context_manager,
                         safety,
+                        hooks,
                         tool_parent_id,
                         &tool_name,
                         params,
@@ -332,6 +334,7 @@ impl Scheduler {
         tools: Arc<ToolRegistry>,
         context_manager: Arc<ContextManager>,
         safety: Arc<SafetyLayer>,
+        hooks: Arc<HookRegistry>,
         job_id: Uuid,
         tool_name: &str,
         params: serde_json::Value,
@@ -355,11 +358,17 @@ impl Scheduler {
             .into());
         }
 
+        // Approval-gated tools are blocked in autonomous subtasks unless a
+        // registered hook explicitly vouches for them. Destructive
+        // parameter combinations always require a human, trust or not.
         if tool.requires_approval() {
-            return Err(crate::error::ToolError::AuthRequired {
-                name: tool_name.to_string(),
+            let hook_trusted = hooks.is_tool_trusted(tool_name).await;
+            if !hook_trusted || tool.requires_approval_for(&params) {
+                return Err(crate::error::ToolError::AuthRequired {
+                    name: tool_name.to_string(),
+                }
+                .into());
             }
-            .into());
         }
 
         // Validate tool parameters

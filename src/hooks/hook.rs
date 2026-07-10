@@ -199,6 +199,21 @@ pub trait Hook: Send + Sync {
         Duration::from_secs(5)
     }
 
+    /// Tools this hook vouches for: approval-gated tools that flows
+    /// driven by this hook are allowed to execute without a human in
+    /// the loop.
+    ///
+    /// Grants are UNIONED across all registered hooks (see
+    /// `HookRegistry::trusted_tools`) — registering another hook can
+    /// only add trust, never drop a previously granted tool. Parameter-
+    /// level destructive checks (`Tool::requires_approval_for`) still
+    /// apply regardless of trust.
+    ///
+    /// Default: no grants.
+    fn trusted_tools(&self) -> Vec<String> {
+        Vec::new()
+    }
+
     /// Execute the hook.
     async fn execute(&self, event: &HookEvent, ctx: &HookContext)
     -> Result<HookOutcome, HookError>;

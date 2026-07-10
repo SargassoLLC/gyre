@@ -57,6 +57,28 @@ impl HookRegistry {
         hooks.iter().map(|e| e.hook.name().to_string()).collect()
     }
 
+    /// The union of tool grants across ALL registered hooks.
+    ///
+    /// Additive merge by construction: composition/layering of hooks can
+    /// only extend the trusted set, never drop a grant contributed by an
+    /// earlier hook — the failure mode where composing hook registries
+    /// silently lost approval-sensitive tool policies.
+    pub async fn trusted_tools(&self) -> std::collections::HashSet<String> {
+        let hooks = self.hooks.read().await;
+        hooks
+            .iter()
+            .flat_map(|e| e.hook.trusted_tools())
+            .collect()
+    }
+
+    /// Whether any registered hook vouches for the given tool.
+    pub async fn is_tool_trusted(&self, tool_name: &str) -> bool {
+        let hooks = self.hooks.read().await;
+        hooks
+            .iter()
+            .any(|e| e.hook.trusted_tools().iter().any(|t| t == tool_name))
+    }
+
     /// Run all hooks matching the event's hook point.
     ///
     /// - Hooks run in priority order (lowest first).
@@ -517,6 +539,100 @@ mod tests {
         let result = registry.run(&test_event()).await;
         assert!(result.is_err());
         assert!(matches!(result.unwrap_err(), HookError::Timeout { .. }));
+    }
+
+    /// A hook that vouches for a set of tools.
+    struct TrustingHook {
+        name: String,
+        trusted: Vec<String>,
+    }
+
+    #[async_trait]
+    impl Hook for TrustingHook {
+        fn name(&self) -> &str {
+            &self.name
+        }
+        fn hook_points(&self) -> &[HookPoint] {
+            &[HookPoint::BeforeToolCall]
+        }
+        fn trusted_tools(&self) -> Vec<String> {
+            self.trusted.clone()
+        }
+        async fn execute(
+            &self,
+            _event: &HookEvent,
+            _ctx: &HookContext,
+        ) -> Result<HookOutcome, HookError> {
+            Ok(HookOutcome::ok())
+        }
+    }
+
+    // Composing hooks UNIONS their tool grants: registering a second hook
+    // must never drop a grant from the first (the bug this guards against:
+    // hook composition replacing, not merging, approval-sensitive policy).
+    #[tokio::test]
+    async fn test_trusted_tools_union_across_hooks() {
+        let registry = HookRegistry::new();
+        registry
+            .register(Arc::new(TrustingHook {
+                name: "hook-a".into(),
+                trusted: vec!["shell".into(), "http_request".into()],
+            }))
+            .await;
+        assert!(registry.is_tool_trusted("shell").await);
+
+        // Register a second hook with a DIFFERENT grant set — the first
+        // hook's grants must survive.
+        registry
+            .register(Arc::new(TrustingHook {
+                name: "hook-b".into(),
+                trusted: vec!["write_file".into()],
+            }))
+            .await;
+
+        let trusted = registry.trusted_tools().await;
+        assert!(trusted.contains("shell"));
+        assert!(trusted.contains("http_request"));
+        assert!(trusted.contains("write_file"));
+        assert_eq!(trusted.len(), 3);
+    }
+
+    // Hooks with no grants contribute nothing; unknown tools stay untrusted.
+    #[tokio::test]
+    async fn test_trusted_tools_default_empty() {
+        let registry = HookRegistry::new();
+        registry
+            .register(Arc::new(PassthroughHook {
+                name: "plain".into(),
+                points: vec![HookPoint::BeforeInbound],
+            }))
+            .await;
+
+        assert!(registry.trusted_tools().await.is_empty());
+        assert!(!registry.is_tool_trusted("shell").await);
+    }
+
+    // Unregistering a hook withdraws (only) its grants.
+    #[tokio::test]
+    async fn test_trusted_tools_withdrawn_on_unregister() {
+        let registry = HookRegistry::new();
+        registry
+            .register(Arc::new(TrustingHook {
+                name: "hook-a".into(),
+                trusted: vec!["shell".into()],
+            }))
+            .await;
+        registry
+            .register(Arc::new(TrustingHook {
+                name: "hook-b".into(),
+                trusted: vec!["write_file".into()],
+            }))
+            .await;
+
+        registry.unregister("hook-a").await;
+
+        assert!(!registry.is_tool_trusted("shell").await);
+        assert!(registry.is_tool_trusted("write_file").await);
     }
 
     #[tokio::test]

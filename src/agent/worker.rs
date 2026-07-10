@@ -382,12 +382,17 @@ Report when the job is complete or if you encounter issues you cannot resolve."#
                     name: tool_name.to_string(),
                 })?;
 
-        // Tools requiring approval are blocked in autonomous jobs
+        // Tools requiring approval are blocked in autonomous jobs unless a
+        // registered hook explicitly vouches for them. Destructive
+        // parameter combinations always require a human, trust or not.
         if tool.requires_approval() {
-            return Err(crate::error::ToolError::AuthRequired {
-                name: tool_name.to_string(),
+            let hook_trusted = deps.hooks.is_tool_trusted(tool_name).await;
+            if !hook_trusted || tool.requires_approval_for(&params) {
+                return Err(crate::error::ToolError::AuthRequired {
+                    name: tool_name.to_string(),
+                }
+                .into());
             }
-            .into());
         }
 
         // Fetch job context early so we have the real user_id for hooks
