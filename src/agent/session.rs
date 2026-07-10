@@ -84,10 +84,15 @@ impl Session {
     /// Threads are keyed by channel, so an approval sent from a different
     /// channel than the one that asked resolves to a different (often
     /// brand-new) thread — the addressed thread has no pending approval
-    /// and the real one stays stuck in `AwaitingApproval`. When the
-    /// addressed thread has no approval, search the whole session (all
-    /// channels share one session per user) for the awaiting thread,
-    /// matching `request_id` when given.
+    /// and the real one stays stuck in `AwaitingApproval`.
+    ///
+    /// Cross-channel resolution REQUIRES the request ID. A bare "yes"
+    /// with no request ID only matches an approval pending on the thread
+    /// it was typed into — otherwise an unrelated affirmative on channel
+    /// B could approve a dangerous tool the user was prompted about on
+    /// channel A and never saw from B. The request ID is shown in the
+    /// approval prompt precisely so cross-channel answers can name what
+    /// they are approving.
     pub fn resolve_approval_thread(
         &self,
         addressed: Uuid,
@@ -106,10 +111,21 @@ impl Session {
             return ApprovalThreadResolution::Found(addressed);
         }
 
+        // Without a request ID there is nothing tying this answer to an
+        // approval on another channel's thread — do not guess.
+        let Some(rid) = request_id else {
+            return ApprovalThreadResolution::NotFound;
+        };
+
         let candidates: Vec<Uuid> = self
             .threads
             .values()
-            .filter(|t| holds_approval(t))
+            .filter(|t| {
+                t.state == ThreadState::AwaitingApproval
+                    && t.pending_approval
+                        .as_ref()
+                        .is_some_and(|p| p.request_id == rid)
+            })
             .map(|t| t.id)
             .collect();
 
@@ -581,14 +597,21 @@ mod tests {
         // A fresh thread, as resolve_thread would create for the other channel.
         let other_tid = session.create_thread().id;
 
-        // With request id.
+        // With request id: cross-channel resolution works.
         assert_eq!(
             session.resolve_approval_thread(other_tid, Some(rid)),
             ApprovalThreadResolution::Found(awaiting_tid)
         );
-        // Without request id: unique awaiting thread still found.
+        // Without request id: NEVER cross channels — a bare "yes" typed
+        // elsewhere must not approve a tool the user was prompted about
+        // on a different channel.
         assert_eq!(
             session.resolve_approval_thread(other_tid, None),
+            ApprovalThreadResolution::NotFound
+        );
+        // A bare "yes" on the SAME thread that asked still works.
+        assert_eq!(
+            session.resolve_approval_thread(awaiting_tid, None),
             ApprovalThreadResolution::Found(awaiting_tid)
         );
     }
@@ -610,25 +633,33 @@ mod tests {
         );
     }
 
-    // Two awaiting threads + no request id = ambiguous, never a guess.
+    // Two awaiting threads + no request id = NotFound (no guessing);
+    // a duplicated request id across threads = Ambiguous, never a guess.
     #[test]
-    fn test_resolve_approval_ambiguous() {
+    fn test_resolve_approval_never_guesses() {
         let mut session = Session::new("u");
         let t1 = session.create_thread().id;
         let t2 = session.create_thread().id;
+        let shared_rid = Uuid::new_v4();
         session
             .threads
             .get_mut(&t1)
             .unwrap()
-            .await_approval(pending(Uuid::new_v4()));
+            .await_approval(pending(shared_rid));
         session
             .threads
             .get_mut(&t2)
             .unwrap()
-            .await_approval(pending(Uuid::new_v4()));
+            .await_approval(pending(shared_rid));
 
         let other = session.create_thread().id;
-        match session.resolve_approval_thread(other, None) {
+        // No request id: never scans across threads.
+        assert_eq!(
+            session.resolve_approval_thread(other, None),
+            ApprovalThreadResolution::NotFound
+        );
+        // Duplicate request id (should not happen, but never guess).
+        match session.resolve_approval_thread(other, Some(shared_rid)) {
             ApprovalThreadResolution::Ambiguous(ids) => assert_eq!(ids.len(), 2),
             other => panic!("expected Ambiguous, got {:?}", other),
         }

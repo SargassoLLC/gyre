@@ -101,9 +101,19 @@ impl SessionManager {
 
     /// Snapshot all active sessions (for `sessions_list` and diagnostics).
     pub async fn list_sessions(&self) -> Vec<SessionSummary> {
-        let sessions = self.sessions.read().await;
-        let mut summaries = Vec::with_capacity(sessions.len());
-        for (user_id, session) in sessions.iter() {
+        // Clone the Arcs and drop the map guard BEFORE locking each
+        // session, so slow per-session locks never block session creation
+        // (which needs the map's write lock).
+        let snapshot: Vec<(String, Arc<Mutex<Session>>)> = {
+            let sessions = self.sessions.read().await;
+            sessions
+                .iter()
+                .map(|(user_id, session)| (user_id.clone(), Arc::clone(session)))
+                .collect()
+        };
+
+        let mut summaries = Vec::with_capacity(snapshot.len());
+        for (user_id, session) in snapshot.iter() {
             let sess = session.lock().await;
             summaries.push(SessionSummary {
                 user_id: user_id.clone(),

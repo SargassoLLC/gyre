@@ -35,7 +35,11 @@ struct WireReport {
 
 /// Parse a model check-in response into an [`AttentionReport`].
 ///
-/// Accepts the bare JSON object or one wrapped in a Markdown code fence.
+/// Accepts the bare JSON object, one wrapped in a Markdown code fence,
+/// or a JSON object embedded in surrounding prose (chat-tuned models
+/// often add a sentence around the requested JSON — extracting the
+/// `{...}` substring is structural, and absorbs the most common
+/// formatting deviation instead of paging the user about it).
 /// On any parse failure the report FAILS OPEN to `needs_attention: true`
 /// with the raw content as the summary — a spurious notification is
 /// recoverable, a silently dropped alert is not.
@@ -44,8 +48,17 @@ pub fn parse_attention_report(content: &str) -> AttentionReport {
 
     let candidate = strip_code_fence(trimmed);
 
-    match serde_json::from_str::<WireReport>(candidate) {
-        Ok(wire) => {
+    let wire = serde_json::from_str::<WireReport>(candidate)
+        .ok()
+        .or_else(|| {
+            // Second pass: the outermost {...} span within prose.
+            let start = candidate.find('{')?;
+            let end = candidate.rfind('}')?;
+            serde_json::from_str::<WireReport>(candidate.get(start..=end)?).ok()
+        });
+
+    match wire {
+        Some(wire) => {
             let summary = wire.summary.trim();
             AttentionReport {
                 needs_attention: wire.needs_attention,
@@ -56,7 +69,7 @@ pub fn parse_attention_report(content: &str) -> AttentionReport {
                 },
             }
         }
-        Err(_) => AttentionReport {
+        None => AttentionReport {
             needs_attention: true,
             summary: Some(trimmed.to_string()),
         },
@@ -122,6 +135,17 @@ mod tests {
         let r = parse_attention_report("Everything looks fine today!");
         assert!(r.needs_attention);
         assert_eq!(r.summary.as_deref(), Some("Everything looks fine today!"));
+    }
+
+    // JSON embedded in prose is extracted — a quiet routine whose model
+    // adds a sentence around the JSON must not page the user.
+    #[test]
+    fn json_embedded_in_prose_is_extracted() {
+        let r = parse_attention_report(
+            "Here is my check-in: {\"needs_attention\": false, \"summary\": \"\"} \
+             Let me know if you need anything else!",
+        );
+        assert!(!r.needs_attention);
     }
 
     #[test]

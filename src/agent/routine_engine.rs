@@ -61,6 +61,9 @@ pub struct RoutineTestReport {
     pub issues: Vec<String>,
     /// The judge's overall notes.
     pub judge_notes: Option<String>,
+    /// Limitations of THIS test run itself (e.g. full_job dry-runs are
+    /// approximate) — distinct from the judge's issues with the routine.
+    pub caveats: Vec<String>,
 }
 
 /// Parsed judge verdict.
@@ -373,7 +376,9 @@ impl RoutineEngine {
 
         // Execute the action exactly as a live run would (FullJob currently
         // dry-runs as lightweight, same as live execution) — but with no
-        // side effects beyond the LLM call itself.
+        // side effects beyond the LLM call itself. Dry-runs count toward
+        // the global concurrency cap like live runs.
+        self.running_count.fetch_add(1, Ordering::Relaxed);
         let result = match &routine.action {
             RoutineAction::Lightweight {
                 prompt,
@@ -385,6 +390,16 @@ impl RoutineEngine {
                     .await
             }
         };
+        self.running_count.fetch_sub(1, Ordering::Relaxed);
+
+        let mut caveats = Vec::new();
+        if matches!(routine.action, RoutineAction::FullJob { .. }) {
+            caveats.push(
+                "full_job dry-run is approximate: it ran as a single tool-less \
+                 LLM call, so the judged output may differ from a real run"
+                    .to_string(),
+            );
+        }
 
         let (status, summary, tokens) = match result {
             Ok(x) => x,
@@ -434,6 +449,7 @@ impl RoutineEngine {
             ready: verdict.ready,
             issues: verdict.issues,
             judge_notes: verdict.notes,
+            caveats,
         })
     }
 
