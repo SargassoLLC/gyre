@@ -26,7 +26,8 @@ pub use job::{
 pub use json::JsonTool;
 pub use memory::{MemoryReadTool, MemorySearchTool, MemoryTreeTool, MemoryWriteTool};
 pub use routine::{
-    RoutineCreateTool, RoutineDeleteTool, RoutineHistoryTool, RoutineListTool, RoutineUpdateTool,
+    RoutineCreateTool, RoutineDeleteTool, RoutineHistoryTool, RoutineListTool, RoutineTestTool,
+    RoutineUpdateTool,
 };
 pub use sessions::{SessionsListTool, SessionsSendTool};
 pub use shell::ShellTool;

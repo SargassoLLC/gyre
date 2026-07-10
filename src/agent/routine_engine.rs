@@ -46,6 +46,69 @@ pub struct RoutineNotification {
     pub response: OutgoingResponse,
 }
 
+/// Report from a routine dry-run + readiness judgment.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct RoutineTestReport {
+    pub routine_name: String,
+    /// Dry-run outcome: "ok" | "attention" | "failed".
+    pub run_status: String,
+    /// The routine's output (None when it reported nothing to do).
+    pub output_summary: Option<String>,
+    pub tokens_used: Option<i32>,
+    /// The judge's verdict: safe to enable unattended?
+    pub ready: bool,
+    /// Concrete problems the judge found.
+    pub issues: Vec<String>,
+    /// The judge's overall notes.
+    pub judge_notes: Option<String>,
+}
+
+/// Parsed judge verdict.
+struct ReadinessVerdict {
+    ready: bool,
+    issues: Vec<String>,
+    notes: Option<String>,
+}
+
+/// Parse the judge's JSON verdict. Structural parsing only; an
+/// unparseable verdict FAILS CLOSED to not-ready — a pre-flight check
+/// that can't read its own judge must not green-light the routine.
+fn parse_readiness_verdict(content: &str) -> ReadinessVerdict {
+    #[derive(serde::Deserialize)]
+    struct Wire {
+        ready: bool,
+        #[serde(default)]
+        issues: Vec<String>,
+        #[serde(default)]
+        notes: String,
+    }
+
+    let trimmed = content.trim();
+    let candidate = trimmed
+        .strip_prefix("```json")
+        .or_else(|| trimmed.strip_prefix("```"))
+        .and_then(|s| s.strip_suffix("```"))
+        .map(str::trim)
+        .unwrap_or(trimmed);
+
+    match serde_json::from_str::<Wire>(candidate) {
+        Ok(w) => ReadinessVerdict {
+            ready: w.ready,
+            issues: w.issues,
+            notes: if w.notes.trim().is_empty() {
+                None
+            } else {
+                Some(w.notes.trim().to_string())
+            },
+        },
+        Err(_) => ReadinessVerdict {
+            ready: false,
+            issues: vec!["judge returned unparseable verdict".to_string()],
+            notes: Some(trimmed.to_string()),
+        },
+    }
+}
+
 /// The routine execution engine.
 pub struct RoutineEngine {
     config: RoutineConfig,
@@ -281,6 +344,97 @@ impl RoutineEngine {
             }
             execute_routine(engine, routine, run).await;
         });
+    }
+
+    /// Dry-run a routine and judge its readiness BEFORE it is enabled.
+    ///
+    /// Pre-flight simulation for autonomous work: executes the routine's
+    /// action once with no run record, no runtime-state update, and no
+    /// notification (safe to call on disabled routines), then asks the
+    /// model to judge whether the output looks production-ready given the
+    /// routine's stated purpose. The judgment is a model call returning
+    /// structured JSON — no hand-coded quality rubric.
+    pub async fn test_routine(&self, routine_id: Uuid) -> Result<RoutineTestReport, String> {
+        let routine = self
+            .store
+            .get_routine(routine_id)
+            .await
+            .map_err(|e| format!("DB error: {e}"))?
+            .ok_or_else(|| format!("routine {routine_id} not found"))?;
+
+        let ctx = EngineContext {
+            store: self.store.clone(),
+            llm: self.llm.clone(),
+            workspace: self.workspace.clone(),
+            notify_tx: self.notify_tx.clone(),
+            running_count: self.running_count.clone(),
+            max_lightweight_tokens: self.config.max_lightweight_tokens,
+        };
+
+        // Execute the action exactly as a live run would (FullJob currently
+        // dry-runs as lightweight, same as live execution) — but with no
+        // side effects beyond the LLM call itself.
+        let result = match &routine.action {
+            RoutineAction::Lightweight {
+                prompt,
+                context_paths,
+                max_tokens,
+            } => execute_lightweight(&ctx, &routine, prompt, context_paths, *max_tokens).await,
+            RoutineAction::FullJob { description, .. } => {
+                execute_lightweight(&ctx, &routine, description, &[], ctx.max_lightweight_tokens)
+                    .await
+            }
+        };
+
+        let (status, summary, tokens) = match result {
+            Ok(x) => x,
+            Err(e) => (RunStatus::Failed, Some(e), None),
+        };
+
+        // Judge the dry-run output against the routine's stated purpose.
+        let judge_prompt = format!(
+            "You are judging whether a scheduled routine is ready to run \
+             unattended. Be skeptical: this routine will act autonomously \
+             on a schedule with nobody watching.\n\n\
+             Routine name: {}\n\
+             Routine description: {}\n\
+             Trigger: {}\n\n\
+             Dry-run result status: {}\n\
+             Dry-run output:\n{}\n\n\
+             Judge: does the output match the routine's purpose? Is it \
+             specific enough to be useful and quiet enough not to spam? \
+             Would repeated runs annoy or mislead the user?\n\n\
+             Respond with a single JSON object and nothing else:\n\
+             {{\"ready\": <true|false>, \"issues\": [\"<each concrete problem found>\"], \
+             \"notes\": \"<one short paragraph of judgment>\"}}",
+            routine.name,
+            routine.description,
+            routine.trigger.type_tag(),
+            status,
+            summary.as_deref().unwrap_or("(no attention output — routine reported nothing to do)"),
+        );
+
+        let judge_request =
+            CompletionRequest::new(vec![ChatMessage::user(&judge_prompt)]).with_temperature(0.2);
+
+        let verdict = match self.llm.complete(judge_request).await {
+            Ok(resp) => parse_readiness_verdict(&resp.content),
+            Err(e) => ReadinessVerdict {
+                ready: false,
+                issues: vec![format!("judge LLM call failed: {e}")],
+                notes: None,
+            },
+        };
+
+        Ok(RoutineTestReport {
+            routine_name: routine.name.clone(),
+            run_status: status.to_string(),
+            output_summary: summary,
+            tokens_used: tokens,
+            ready: verdict.ready,
+            issues: verdict.issues,
+            judge_notes: verdict.notes,
+        })
     }
 
     fn check_cooldown(&self, routine: &Routine) -> bool {
@@ -596,7 +750,43 @@ fn truncate(s: &str, max: usize) -> String {
 
 #[cfg(test)]
 mod tests {
+    use super::parse_readiness_verdict;
     use crate::agent::routine::{NotifyConfig, RunStatus};
+
+    #[test]
+    fn test_readiness_verdict_ready() {
+        let v = parse_readiness_verdict(
+            r#"{"ready": true, "issues": [], "notes": "Output matches purpose."}"#,
+        );
+        assert!(v.ready);
+        assert!(v.issues.is_empty());
+        assert_eq!(v.notes.as_deref(), Some("Output matches purpose."));
+    }
+
+    #[test]
+    fn test_readiness_verdict_not_ready_with_issues() {
+        let v = parse_readiness_verdict(
+            r#"{"ready": false, "issues": ["output is generic", "would notify daily with no findings"], "notes": ""}"#,
+        );
+        assert!(!v.ready);
+        assert_eq!(v.issues.len(), 2);
+        assert!(v.notes.is_none());
+    }
+
+    #[test]
+    fn test_readiness_verdict_fenced() {
+        let v = parse_readiness_verdict("```json\n{\"ready\": true}\n```");
+        assert!(v.ready);
+    }
+
+    // A pre-flight check that can't parse its own judge must not
+    // green-light the routine: unparseable fails CLOSED.
+    #[test]
+    fn test_readiness_verdict_unparseable_fails_closed() {
+        let v = parse_readiness_verdict("Looks good to me!");
+        assert!(!v.ready);
+        assert!(!v.issues.is_empty());
+    }
 
     #[test]
     fn test_notification_gating() {

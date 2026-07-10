@@ -634,3 +634,84 @@ impl Tool for RoutineHistoryTool {
         false
     }
 }
+
+// ==================== routine_test ====================
+
+/// Dry-run a routine and judge its readiness before enabling it.
+pub struct RoutineTestTool {
+    store: Arc<dyn Database>,
+    engine: Arc<RoutineEngine>,
+}
+
+impl RoutineTestTool {
+    pub fn new(store: Arc<dyn Database>, engine: Arc<RoutineEngine>) -> Self {
+        Self { store, engine }
+    }
+}
+
+#[async_trait]
+impl Tool for RoutineTestTool {
+    fn name(&self) -> &str {
+        "routine_test"
+    }
+
+    fn description(&self) -> &str {
+        "Dry-run a routine and judge whether it is ready to run unattended. \
+         Executes the routine's action once with NO side effects (no run \
+         record, no notification, works on disabled routines), then a model \
+         judge reviews the output against the routine's purpose and returns \
+         ready/not-ready with concrete issues. Use before enabling any new \
+         or edited routine."
+    }
+
+    fn parameters_schema(&self) -> serde_json::Value {
+        serde_json::json!({
+            "type": "object",
+            "properties": {
+                "name": {
+                    "type": "string",
+                    "description": "Name of the routine to test."
+                }
+            },
+            "required": ["name"]
+        })
+    }
+
+    fn execution_timeout(&self) -> Duration {
+        // Two LLM calls (dry-run + judge).
+        Duration::from_secs(180)
+    }
+
+    async fn execute(
+        &self,
+        params: serde_json::Value,
+        ctx: &JobContext,
+    ) -> Result<ToolOutput, ToolError> {
+        let start = std::time::Instant::now();
+        let name = require_str(&params, "name")?;
+
+        let routine = self
+            .store
+            .get_routine_by_name(&ctx.user_id, name)
+            .await
+            .map_err(|e| ToolError::ExecutionFailed(format!("DB error: {e}")))?
+            .ok_or_else(|| {
+                ToolError::ExecutionFailed(format!("routine '{name}' not found"))
+            })?;
+
+        let report = self
+            .engine
+            .test_routine(routine.id)
+            .await
+            .map_err(ToolError::ExecutionFailed)?;
+
+        let result = serde_json::to_value(&report)
+            .map_err(|e| ToolError::ExecutionFailed(format!("serialize report: {e}")))?;
+
+        Ok(ToolOutput::success(result, start.elapsed()))
+    }
+
+    fn requires_sanitization(&self) -> bool {
+        false
+    }
+}

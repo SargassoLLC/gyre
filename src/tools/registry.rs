@@ -62,6 +62,9 @@ const PROTECTED_TOOL_NAMES: &[&str] = &[
     "routine_update",
     "routine_delete",
     "routine_history",
+    "routine_test",
+    "sessions_send",
+    "sessions_list",
     "skill_list",
     "skill_search",
     "skill_install",
@@ -360,7 +363,7 @@ impl ToolRegistry {
     ) {
         use crate::tools::builtin::{
             RoutineCreateTool, RoutineDeleteTool, RoutineHistoryTool, RoutineListTool,
-            RoutineUpdateTool,
+            RoutineTestTool, RoutineUpdateTool,
         };
         self.register_sync(Arc::new(RoutineCreateTool::new(
             Arc::clone(&store),
@@ -375,8 +378,9 @@ impl ToolRegistry {
             Arc::clone(&store),
             Arc::clone(&engine),
         )));
-        self.register_sync(Arc::new(RoutineHistoryTool::new(store)));
-        tracing::info!("Registered 5 routine management tools");
+        self.register_sync(Arc::new(RoutineHistoryTool::new(Arc::clone(&store))));
+        self.register_sync(Arc::new(RoutineTestTool::new(store, engine)));
+        tracing::info!("Registered 6 routine management tools");
     }
 
     /// Register the software builder tool.
