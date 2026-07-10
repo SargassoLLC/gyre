@@ -1500,15 +1500,24 @@ impl ClaudeCodeConfig {
                 defaults.memory_limit_mb,
             )?,
             allowed_tools: optional_env("CLAUDE_CODE_ALLOWED_TOOLS")?
-                .map(|s| {
-                    s.split(',')
-                        .map(|t| t.trim().to_string())
-                        .filter(|t| !t.is_empty())
-                        .collect()
-                })
+                .map(|s| parse_allowed_tools(&s))
                 .unwrap_or(defaults.allowed_tools),
         })
     }
+}
+
+/// Parse a comma-separated tool allowlist from the env var value.
+///
+/// The value "," is the deny-all sentinel: optional_env() treats an EMPTY
+/// env var as unset (falling back to the default allowlist), so the
+/// orchestrator emits "," when a job's effective allowlist is empty. It
+/// must parse to an empty list here — not to the defaults — or a deny-all
+/// restriction would silently grant the full default toolset in-container.
+fn parse_allowed_tools(s: &str) -> Vec<String> {
+    s.split(',')
+        .map(|t| t.trim().to_string())
+        .filter(|t| !t.is_empty())
+        .collect()
 }
 
 /// Parse the OAuth access token from a Claude Code credentials JSON blob.
@@ -1743,6 +1752,21 @@ mod tests {
 
     /// Serializes env-mutating tests to prevent parallel races.
     static ENV_MUTEX: Mutex<()> = Mutex::new(());
+
+    // The "," deny-all sentinel must parse to an EMPTY list, never fall
+    // through to defaults — see parse_allowed_tools docs.
+    #[test]
+    fn test_parse_allowed_tools_deny_all_sentinel() {
+        assert!(parse_allowed_tools(",").is_empty());
+    }
+
+    #[test]
+    fn test_parse_allowed_tools_normal_list() {
+        assert_eq!(
+            parse_allowed_tools("Read(*), Bash(*) ,Edit(*)"),
+            vec!["Read(*)", "Bash(*)", "Edit(*)"]
+        );
+    }
 
     /// Clear all embedding-related env vars.
     fn clear_embedding_env() {

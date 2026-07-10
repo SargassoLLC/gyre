@@ -251,6 +251,7 @@ impl ContainerJobManager {
         project_dir: Option<PathBuf>,
         mode: JobMode,
         credential_grants: Vec<CredentialGrant>,
+        allowed_tools: Option<Vec<String>>,
     ) -> Result<String, OrchestratorError> {
         // Generate auth token (stored in TokenStore, never logged)
         let token = self.token_store.create_token(job_id).await;
@@ -278,7 +279,7 @@ impl ContainerJobManager {
         // Run the actual container creation. On any failure, revoke the token
         // and remove the handle so we don't leak resources.
         match self
-            .create_job_inner(job_id, &token, project_dir, mode)
+            .create_job_inner(job_id, &token, project_dir, mode, allowed_tools)
             .await
         {
             Ok(()) => Ok(token),
@@ -297,6 +298,7 @@ impl ContainerJobManager {
         token: &str,
         project_dir: Option<PathBuf>,
         mode: JobMode,
+        allowed_tools: Option<Vec<String>>,
     ) -> Result<(), OrchestratorError> {
         // Connect to Docker (reuses cached connection)
         let docker = self.docker().await?;
@@ -339,12 +341,25 @@ impl ContainerJobManager {
             } else if let Some(ref oauth_token) = self.config.claude_code_oauth_token {
                 env_vec.push(format!("CLAUDE_CODE_OAUTH_TOKEN={}", oauth_token));
             }
-            if !self.config.claude_code_allowed_tools.is_empty() {
-                env_vec.push(format!(
-                    "CLAUDE_CODE_ALLOWED_TOOLS={}",
-                    self.config.claude_code_allowed_tools.join(",")
-                ));
-            }
+            // toolsAllow follows the job, not just the manager: a spawning
+            // session/routine may NARROW the configured allowlist for this
+            // job, never widen it (restrict-only intersection).
+            //
+            // Empty effective list (deny-all) is emitted as "," — NOT "" —
+            // because optional_env() treats an empty env var as unset, which
+            // would silently fall back to the DEFAULT allowlist inside the
+            // container and drop the restriction. "," parses to an empty
+            // list on the worker side (split + trim + filter-empty).
+            let effective_tools = effective_allowed_tools(
+                &self.config.claude_code_allowed_tools,
+                allowed_tools.as_deref(),
+            );
+            let env_value = if effective_tools.is_empty() {
+                ",".to_string()
+            } else {
+                effective_tools.join(",")
+            };
+            env_vec.push(format!("CLAUDE_CODE_ALLOWED_TOOLS={}", env_value));
         }
 
         // Memory limit: Claude Code gets more memory
@@ -598,6 +613,24 @@ impl ContainerJobManager {
     }
 }
 
+/// Compute the effective Claude Code tool allowlist for a job.
+///
+/// A per-job request may only NARROW the manager-configured allowlist
+/// (set intersection), never widen it — the configured list is the
+/// security boundary; the request is a further restriction from the
+/// spawning session/routine. `None` means "no restriction requested":
+/// the configured list applies unchanged.
+fn effective_allowed_tools(configured: &[String], requested: Option<&[String]>) -> Vec<String> {
+    match requested {
+        None => configured.to_vec(),
+        Some(req) => configured
+            .iter()
+            .filter(|t| req.contains(t))
+            .cloned()
+            .collect(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -613,6 +646,51 @@ mod tests {
     fn test_container_state_display() {
         assert_eq!(ContainerState::Running.to_string(), "running");
         assert_eq!(ContainerState::Stopped.to_string(), "stopped");
+    }
+
+    fn tools(names: &[&str]) -> Vec<String> {
+        names.iter().map(|s| s.to_string()).collect()
+    }
+
+    // No restriction requested: configured list applies unchanged.
+    #[test]
+    fn effective_tools_none_uses_configured() {
+        let configured = tools(&["Read(*)", "Bash(*)", "Edit(*)"]);
+        assert_eq!(
+            effective_allowed_tools(&configured, None),
+            configured.clone()
+        );
+    }
+
+    // Restriction narrows: intersection only, configured order preserved.
+    #[test]
+    fn effective_tools_intersection_narrows() {
+        let configured = tools(&["Read(*)", "Bash(*)", "Edit(*)"]);
+        let requested = tools(&["Edit(*)", "Read(*)"]);
+        assert_eq!(
+            effective_allowed_tools(&configured, Some(&requested)),
+            tools(&["Read(*)", "Edit(*)"])
+        );
+    }
+
+    // Restriction can NEVER widen: entries outside the configured
+    // boundary are dropped.
+    #[test]
+    fn effective_tools_cannot_widen() {
+        let configured = tools(&["Read(*)"]);
+        let requested = tools(&["Read(*)", "Bash(*)", "WebFetch(*)"]);
+        assert_eq!(
+            effective_allowed_tools(&configured, Some(&requested)),
+            tools(&["Read(*)"])
+        );
+    }
+
+    // Explicit empty restriction = deny-all.
+    #[test]
+    fn effective_tools_empty_request_denies_all() {
+        let configured = tools(&["Read(*)", "Bash(*)"]);
+        let requested: Vec<String> = vec![];
+        assert!(effective_allowed_tools(&configured, Some(&requested)).is_empty());
     }
 
     #[test]

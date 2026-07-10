@@ -277,6 +277,7 @@ impl CreateJobTool {
         wait: bool,
         mode: JobMode,
         credential_grants: Vec<CredentialGrant>,
+        allowed_tools: Option<Vec<String>>,
         ctx: &JobContext,
     ) -> Result<ToolOutput, ToolError> {
         let start = std::time::Instant::now();
@@ -332,7 +333,14 @@ impl CreateJobTool {
 
         // Create the container job with the pre-determined job_id.
         let _token = jm
-            .create_job(job_id, task, Some(project_dir), mode, credential_grants)
+            .create_job(
+                job_id,
+                task,
+                Some(project_dir),
+                mode,
+                credential_grants,
+                allowed_tools,
+            )
             .await
             .map_err(|e| {
                 self.update_status(
@@ -684,6 +692,15 @@ impl Tool for CreateJobTool {
                                         secrets store (via 'gyre tool auth' or web UI). Example: \
                                         {\"github_token\": \"GITHUB_TOKEN\", \"npm_token\": \"NPM_TOKEN\"}",
                         "additionalProperties": { "type": "string" }
+                    },
+                    "allowed_tools": {
+                        "type": "array",
+                        "items": { "type": "string" },
+                        "description": "Restrict the tools available inside a claude_code job to this subset. \
+                                        Restrict-only: entries outside the configured allowlist are ignored — \
+                                        a job can narrow its permissions, never widen them. Omit for the \
+                                        configured default. Example: [\"Read(*)\", \"Grep(*)\"] for a \
+                                        read-only analysis job."
                     }
                 },
                 "required": ["title", "description"]
@@ -740,10 +757,28 @@ impl Tool for CreateJobTool {
             // Parse and validate credential grants
             let credential_grants = self.parse_credentials(&params, &ctx.user_id).await?;
 
+            // Optional restrict-only tool allowlist for this job (narrows
+            // the configured list via intersection in the job manager).
+            let allowed_tools = params.get("allowed_tools").and_then(|v| v.as_array()).map(
+                |arr| -> Vec<String> {
+                    arr.iter()
+                        .filter_map(|v| v.as_str().map(String::from))
+                        .collect()
+                },
+            );
+
             // Combine title and description into the task prompt for the sub-agent.
             let task = format!("{}\n\n{}", title, description);
-            self.execute_sandbox(&task, explicit_dir, wait, mode, credential_grants, ctx)
-                .await
+            self.execute_sandbox(
+                &task,
+                explicit_dir,
+                wait,
+                mode,
+                credential_grants,
+                allowed_tools,
+                ctx,
+            )
+            .await
         } else {
             self.execute_local(title, description, ctx).await
         }

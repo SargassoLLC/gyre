@@ -1427,6 +1427,11 @@ async fn jobs_restart_handler(
         });
 
     let project_dir = std::path::PathBuf::from(&old_job.project_dir);
+    // TODO(1.5 follow-up): per-job tool restrictions are not persisted in
+    // SandboxJobRecord, so a restart cannot recover the original job's
+    // narrowed allowlist and falls back to the configured default.
+    // Persisting the restriction requires a Database-trait change on both
+    // backends — tracked alongside the EgressPolicy (2.2) work.
     let _token = jm
         .create_job(
             new_job_id,
@@ -1434,6 +1439,7 @@ async fn jobs_restart_handler(
             Some(project_dir),
             mode,
             credential_grants,
+            None,
         )
         .await
         .map_err(|e| {
