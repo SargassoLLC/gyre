@@ -1,0 +1,67 @@
+# Gyre Sprint Plan — 2026-07-10 (Tier 1 + Tier 2, v0.3.0)
+
+**Status:** awaiting "go" from Greg
+**Model:** Fable 5 | **Repo state:** 2 commits (`bcd7d62` beta.1 initial, `96d1d0e` test fix)
+**Build health:** `cargo build` ✅, full test suite **1,445 passed / 0 failed** (after fixing a test-compile error + 4 latent fixture bugs in `src/safety/leak_detector.rs`)
+
+---
+
+## What exploration found (differs from SPRINT_BRIEF.md in places)
+
+1. **1.1 Fallback resilience** — `FailoverProvider` (src/llm/failover.rs) is sound and well-tested. The Gyre-shaped bug is in `set_model()` (failover.rs:312-317): it propagates an explicit model to **every** provider in the chain with `?` short-circuit. `/model claude-sonnet-4-6` (src/agent/commands.rs:467) overwrites the fallback provider's model with an Anthropic ID — the chain survives in structure but is dead in practice, or the switch errors outright.
+2. **1.2 Cron delivery** — `send_notification()` (src/agent/routine_engine.rs:499-542) **ignores `NotifyConfig.channel` and `.user` entirely**. The forwarder (src/agent/agent_loop.rs:407-428) reads a `notify_user` metadata key the engine never sets, then `broadcast_all`s. Delivery target is dropped at the first hop.
+3. **1.3 Stale origin** — Gyre threads are keyed by `(channel, user, external_id)` (session_manager.rs, with cross-channel isolation tests) and `Session` carries no origin fields. Bug may not exist by construction; needs a focused verification pass of the respond path, priced separately.
+4. **1.4 Hook tool policies** — Gyre hooks (src/hooks/hook.rs) carry **no tool-policy concept**. This is a small missing feature (additive `trusted_tools()` on the `Hook` trait + union merge in registry + wiring into `session.auto_approved_tools`), not a merge bug.
+5. **1.5 toolsAllow inheritance** — confirmed as briefed: `ContainerJobConfig.claude_code_allowed_tools` set once at startup (main.rs:1099); `create_job()` (job_manager.rs:247) takes no per-job allow-list; job_manager.rs:82 defaults to `ClaudeCodeConfig::default()`. Fix: per-job override threaded to `CLAUDE_CODE_ALLOWED_TOOLS` env (job_manager.rs:342), which claude_bridge.rs already consumes.
+6. **1.6 sessions_send** — **does not exist** (zero grep hits). Net-new feature. `ChannelManager` already has `broadcast(channel, user)` + `inject_sender()`, so direct-delivery (never silent-queue) is a natural fit.
+7. **Discovered issue (not in brief):** `FullJob` routines silently execute as lightweight — scheduler integration is a stub (routine_engine.rs:315-323). Undercuts 1.5 and the Research Fan-Out skill.
+8. **Reference path corrections:** fan-out spec is at `~/.openclaw/workspace/research/research-fanout.md` (brief's path wrong); CrabTrap plan at `~/.openclaw/workspace/docs/CRABTRAP_PLAN.md`; Rex's hermit-loop config **not found** at `~/agents/` — Novelty Gate will be written from the pattern description.
+
+## Sprint table
+
+| # | Item | Files to modify | Lines/structs affected | Est. LOC Δ | Complexity | Ambient-AI blocker? |
+|---|---|---|---|---|---|---|
+| 1.1 | Fallback resilience | src/llm/failover.rs | `set_model()` :312; per-provider model pinning + tests | ~60 | S | harness quality |
+| 1.5 | toolsAllow in isolated jobs | src/orchestrator/job_manager.rs :67,:82,:247,:342; src/tools/builtin/job.rs; src/channels/web/server.rs | `ContainerJobConfig`, `create_job()` signature, call sites | ~120 | M | security-adjacent |
+| 1.2 | Cron delivery awareness | src/agent/routine_engine.rs :499-542; src/agent/agent_loop.rs :388-428 | `send_notification()`, forwarder; carry `NotifyConfig.{channel,user}` | ~70 | S | harness quality |
+| 1.3 | Stale origin reset | verify: src/agent/thread_ops.rs, src/channels/manager.rs | possibly none — may close as "safe by construction + regression tests" | ~30 (tests) | S (+exploration) | harness quality |
+| 1.4 | Hook tool-policy merge | src/hooks/hook.rs, src/hooks/registry.rs; approval check in src/agent/ | `trusted_tools()` on `Hook` trait, union in `run()`, feed approval gate | ~100 | M | harness quality |
+| 1.6 | sessions_send + routing | new src/tools/builtin/sessions.rs; src/agent/session_manager.rs; src/channels/manager.rs | new tool, active-turn detection, direct `broadcast()` delivery when idle | ~300 | L | multi-agent story |
+| 2.4 | Brain Pipeline + retrieval wiring | new examples/brain-pipeline/; src/agent/thread_ops.rs or agent_loop.rs (auto-recall); config flag | turn-start `workspace.search()` top-k injection; 4 routine configs (ingest/consolidate/surface/distill) | ~250 + docs | L | **MEMORY blocker** |
+| 2.2 | CrabTrap for main session | new src/safety/egress.rs (or extensions/crabtrap/); src/tools/builtin/http.rs, shell.rs; docs | egress policy on native tool HTTP + HTTP_PROXY wiring docs | ~300-500 | L | **SECURITY blocker** |
+| 2.1 | Research Fan-Out | new examples/research-fanout/ (SKILL.md, watch-topics, prompts); maybe FullJob→Scheduler fix | prompt chain from spec, de-sargasso'd (memory_write, not curl) | ~150 docs (+~150 if FullJob fix) | M→L | curiosity pillar |
+| 2.3 | Novelty Gate | new docs/patterns/novelty-gate.md + example prompt | pattern doc, memory_search-first template, zero enforcement code | ~120 docs | S | curiosity pillar |
+
+## Ambient AI gap assessment
+
+| Capability | Gyre status | Verdict |
+|---|---|---|
+| Memory | Better than briefed: hybrid RRF search, memory tools, embedding backfill, identity injection all built. **Missing: automatic recall** — nothing surfaces memories into a live turn unless the model calls `memory_search` itself. | 2.4 is smaller than it looks — pipeline is routines-config; the blocker fix is ~100 LOC of context wiring |
+| Security | Docker sandbox, WASM capability sandbox, credential injector, `leak_detector.scan_http_request()` exist — for sub-agents/WASM tools. Native `shell`/`http` in main session have host access, gated only by approval prompts + the regex sanitizer the audit says to delete. | 2.2 is the real gap |
+| Curiosity | Routines/cron solid; FullJob→scheduler stub limits multi-stage autonomy | 2.1 + FullJob fix |
+| Multi-agent | Jobs/orchestrator/containers ✅; no inter-session messaging | 1.6 closes it |
+| Autonomy | Heartbeat + cron ✅ | done |
+
+Extra: `HEARTBEAT_OK`/`ROUTINE_OK` sentinels use `contains()` — audit Theme B names Gyre for structured-output replacement. ~40 LOC, fold into 1.2 while in routine_engine.rs.
+
+## Alternatives (Greg's call)
+
+1. **CrabTrap (2.2)** — *Prescribed:* port Brex proxy as `extensions/crabtrap/`. *Alternative (recommended):* native `EgressPolicy` layer in src/safety/ for all native-tool HTTP — allowlist + optional LLM-judge + audit log — plus first-class HTTP_PROXY support and a documented compose file for real CrabTrap. Tradeoff: native ships in the binary, zero Docker dependency, reuses `scan_http_request`; proxy port is more reference-faithful but adds a mandatory container + MITM-cert management to every install. Both honor "boundaries at the OS / judgment in the model."
+2. **Brain Pipeline (2.4)** — *Prescribed:* port the 4-stage sargasso cycle. *Alternative (recommended):* ship the 4 stages as **routine configs** (existing general mechanism, audit rule 6) + auto-recall injection as the one real code change. The Python `curiosity/` system is 40+ modules; porting it rebuilds the compaction-industrial complex in Rust.
+3. **sessions_send (1.6)** — deliver via existing `ChannelManager::broadcast` immediately when target isn't mid-turn; no queue, no pub/sub. Queue-then-forward is the silent-queue failure being fixed.
+4. **Novelty Gate (2.3)** — pattern doc + memory_search-first prompt only. No enforcement code — a novelty *checker* would be a shadow supervisor (audit rule 7).
+
+## Token + session estimate
+
+| Block | Throughput (in+out) | Output tokens | Notes |
+|---|---|---|---|
+| Tier 1 (all six) | ~350-450k | ~100-140k | 1.3 includes ~25k exploration; 1.6 is the wide one |
+| 2.4 Brain Pipeline | ~120-180k | ~40-60k | mostly config/docs + one surgical context change |
+| 2.2 CrabTrap (native) | ~150-250k | ~50-80k | new module + tests; LLM-judge half is uncertain |
+| 2.1 Fan-Out | ~60-100k | ~20-30k | +80-120k if FullJob→Scheduler fix in scope |
+| 2.3 Novelty Gate | ~20-30k | ~8-12k | cheapest |
+
+**Session split:** Tier 1 + 2.4 + 2.3 fit in one session. **2.2 CrabTrap gets its own focused session** (gated on the design decision anyway). 2.1 fits if FullJob fix deferred.
+
+**Implementation order (commit after every item; stub + IMPLEMENTATION_NOTES.md if quota runs short):**
+1.1 → 1.5 → 1.2 (+sentinel fix) → 1.3 → 1.4 → 1.6 → **2.4** → 2.3 → 2.1 → 2.2
