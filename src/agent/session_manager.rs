@@ -21,6 +21,17 @@ struct ThreadKey {
     external_thread_id: Option<String>,
 }
 
+/// A snapshot of one active session, for listing/diagnostics.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct SessionSummary {
+    pub user_id: String,
+    pub session_id: Uuid,
+    pub thread_count: usize,
+    pub last_active_at: chrono::DateTime<chrono::Utc>,
+    /// Whether any thread in the session is awaiting a tool approval.
+    pub awaiting_approval: bool,
+}
+
 /// Manages sessions, threads, and undo state for all users.
 pub struct SessionManager {
     sessions: RwLock<HashMap<String, Arc<Mutex<Session>>>>,
@@ -86,6 +97,27 @@ impl SessionManager {
         }
 
         session
+    }
+
+    /// Snapshot all active sessions (for `sessions_list` and diagnostics).
+    pub async fn list_sessions(&self) -> Vec<SessionSummary> {
+        let sessions = self.sessions.read().await;
+        let mut summaries = Vec::with_capacity(sessions.len());
+        for (user_id, session) in sessions.iter() {
+            let sess = session.lock().await;
+            summaries.push(SessionSummary {
+                user_id: user_id.clone(),
+                session_id: sess.id,
+                thread_count: sess.threads.len(),
+                last_active_at: sess.last_active_at,
+                awaiting_approval: sess
+                    .threads
+                    .values()
+                    .any(|t| t.state == crate::agent::session::ThreadState::AwaitingApproval),
+            });
+        }
+        summaries.sort_by(|a, b| b.last_active_at.cmp(&a.last_active_at));
+        summaries
     }
 
     /// Resolve an external thread ID to an internal thread.

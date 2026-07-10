@@ -333,6 +333,22 @@ impl ToolRegistry {
         tracing::info!("Registered 4 skill management tools");
     }
 
+    /// Register inter-session messaging tools (sessions_send/sessions_list).
+    ///
+    /// Called from the agent loop once the channel manager and session
+    /// manager exist. sessions_send delivers via the channel manager
+    /// immediately — there is no queue to lose messages in.
+    pub fn register_session_tools(
+        &self,
+        channels: Arc<crate::channels::ChannelManager>,
+        session_manager: Arc<crate::agent::SessionManager>,
+    ) {
+        use crate::tools::builtin::{SessionsListTool, SessionsSendTool};
+        self.register_sync(Arc::new(SessionsSendTool::new(channels)));
+        self.register_sync(Arc::new(SessionsListTool::new(session_manager)));
+        tracing::info!("Registered 2 session messaging tools");
+    }
+
     /// Register routine management tools.
     ///
     /// These allow the LLM to create, list, update, delete, and view history

@@ -380,6 +380,12 @@ impl Agent {
             None
         };
 
+        // Register inter-session messaging tools (sessions_send delivers
+        // via the channel manager immediately — no silent queue).
+        self.deps
+            .tools
+            .register_session_tools(self.channels.clone(), self.session_manager.clone());
+
         // Spawn routine engine if enabled
         let routine_handle = if let Some(ref rt_config) = self.routine_config {
             if rt_config.enabled {
