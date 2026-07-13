@@ -97,3 +97,17 @@ Implementation order unchanged.
 - *AgentMesh:* 1.6 `sessions_send` + orchestrator is the embryo.
 
 **Still non-goals, with reasons:** toxicity/bias classifier stacks (shadow supervisors — audit rule 7; egress boundary + HITL + decision logs cover the real risk); SSO/RBAC/multi-tenancy (services isolation model is one-Gyre-box-per-client — stronger than RBAC, zero identity infra); multi-framework control plane (Lyzr vs LangChain enterprise fight, irrelevant to a personal OS).
+
+---
+
+## Hardening Patterns to fold into the roadmap (field-tested 2026-07-13)
+
+General architecture principles proven out in production this week — candidates for Gyre core:
+
+1. **Single source of truth + runtime parity.** The top failure mode is split-brain: multiple stores of "truth" (or sandboxed vs. host filesystem views) drifting apart with no reconciliation, so the reader lands on the wrong one. Enforce identical state at identical paths across runtimes; give every canonical fact exactly one authoritative home.
+2. **Fact-of-record retrieval tier.** Similarity/embedding retrieval rewards *repetition*, not *truth* — a value written 250 times beats the correct value written once. Add an authoritative tier-0 (curated, dated, cited facts) checked before any semantic lane, plus **confidence gating**: below threshold, surface "no authoritative record — consult the canon," never serve low-confidence output as if it were fact.
+3. **Verified completion, not self-report.** Agents must not self-declare "done." Completion requires an independent (cheap) verifier that checks evidence against a definition-of-done before status flips; retry-with-critique on failure; escalate after N rejections. Prevents plausible-but-false "done" claims.
+4. **Budget governor.** Any autonomous/looping execution needs a hard spend ceiling measured against *real* per-call cost data and checked pre-dispatch — not an advisory note.
+5. **Pipeline durability signals.** Background pipelines fail silently for months. Require heartbeats + health checks so a dead stage surfaces within a day, not at the next audit.
+6. **Observability before autonomy.** An agent that reads the wrong environment produces phantom work ("rebuild loop"). Preflight-verify the environment before acting; abort loudly if the world looks wrong rather than improvising.
+7. **One review surface.** Consolidate autonomous output into a single human-review digest — verified-complete / needs-decision / failed / spend — so oversight is minutes, not archaeology.
