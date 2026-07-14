@@ -95,6 +95,8 @@ impl SetupStage for GatewayStage {
 fn generate_auth_token() -> String {
     use rand::Rng;
     let mut rng = rand::thread_rng();
-    let bytes: Vec<u8> = (0..16).map(|_| rng.r#gen()).collect();
+    // Explicit ::<u8>: on Windows, encode_unicode (via console/dialoguer)
+    // adds competing FromIterator impls for Vec<u8>, making bare gen() ambiguous.
+    let bytes: Vec<u8> = (0..16).map(|_| rng.r#gen::<u8>()).collect();
     hex::encode(bytes)
 }
