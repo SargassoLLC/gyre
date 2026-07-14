@@ -1,6 +1,6 @@
 # EgressPolicy — Responsible AI, local-first (design for v0.4)
 
-**Status:** designed 2026-07-10, implementation scheduled for its own focused session.
+**Status:** implemented 2026-07-14 (all three modes + WASM allowlist audit; `src/safety/egress.rs`). Still pending: `gyre egress log` CLI + gateway tab, `examples/crabtrap-proxy/` compose file.
 **Why it exists:** the main session's native tools (`http`, dynamically built tools) reach the network with host access, gated only by approval prompts. Sub-agents and WASM tools are already sandboxed (Docker, capability allowlists, credential injector, leak detector). This closes the gap and packages the whole stack as Gyre's answer to enterprise "Responsible AI" modules — inside the binary, no proxy container required.
 
 ## Shape

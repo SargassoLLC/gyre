@@ -111,7 +111,8 @@ src/
 │   ├── sanitizer.rs    # Pattern detection, content escaping
 │   ├── validator.rs    # Input validation (length, encoding, patterns)
 │   ├── policy.rs       # PolicyRule system with severity/actions
-│   └── leak_detector.rs # Secret detection (API keys, tokens, etc.)
+│   ├── leak_detector.rs # Secret detection (API keys, tokens, etc.)
+│   └── egress.rs       # EgressPolicy: network boundary on native tools (observe/enforce/judge + egress_events audit)
 │
 ├── llm/                # LLM integration (Gyre only)
 │   ├── provider.rs     # LlmProvider trait, message types
@@ -426,6 +427,23 @@ Tool outputs are wrapped before reaching LLM:
 [escaped content]
 </tool_output>
 ```
+
+### Egress Policy
+
+Outbound network requests from native tools (`http`, built tools) pass
+`EgressPolicy` (`src/safety/egress.rs`): leak scan → host rule match →
+mode for unmatched hosts. Every decision is audited to the `egress_events`
+table (both DB backends). WASM tool allowlist decisions emit into the same
+log. See `docs/design/egress-policy.md`.
+
+- Rules: exact host or `*.suffix` (subdomains only). Deny wins over allow, in every mode.
+- Modes for unmatched hosts: `observe` (allow + audit, default), `enforce`
+  (deny + audit), `judge` (one LLM call with a redacted summary; fails
+  closed on timeout/parse failure/no model).
+- Config: `[egress]` in config.toml or `EGRESS_MODE` / `EGRESS_ALLOW` /
+  `EGRESS_DENY` / `EGRESS_JUDGE_MAX_LATENCY_MS` env vars.
+- Shell subprocess egress (`curl`) is an OS boundary — not intercepted;
+  use the Docker sandbox profile or an HTTP_PROXY.
 
 ## Testing
 

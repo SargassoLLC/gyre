@@ -76,6 +76,10 @@ pub struct ToolRegistry {
     tools: RwLock<HashMap<String, Arc<dyn Tool>>>,
     /// Tracks which names were registered as built-in (protected from shadowing).
     builtin_names: RwLock<std::collections::HashSet<String>>,
+    /// Egress audit sink applied to WASM tools at registration, so their
+    /// allowlist decisions land in the same egress_events log as native
+    /// tool egress (docs/design/egress-policy.md).
+    egress_auditor: std::sync::RwLock<Option<Arc<crate::safety::EgressAuditor>>>,
 }
 
 impl ToolRegistry {
@@ -84,7 +88,20 @@ impl ToolRegistry {
         Self {
             tools: RwLock::new(HashMap::new()),
             builtin_names: RwLock::new(std::collections::HashSet::new()),
+            egress_auditor: std::sync::RwLock::new(None),
         }
+    }
+
+    /// Attach the egress audit sink applied to WASM tools registered from
+    /// now on. Call before WASM tool loading.
+    pub fn set_egress_auditor(&self, auditor: Arc<crate::safety::EgressAuditor>) {
+        if let Ok(mut slot) = self.egress_auditor.write() {
+            *slot = Some(auditor);
+        }
+    }
+
+    fn egress_auditor(&self) -> Option<Arc<crate::safety::EgressAuditor>> {
+        self.egress_auditor.read().ok().and_then(|g| g.clone())
     }
 
     /// Register a tool. Rejects dynamic tools that try to shadow a built-in name.
@@ -441,6 +458,11 @@ impl ToolRegistry {
 
         // Create the wrapper
         let mut wrapper = WasmToolWrapper::new(Arc::clone(reg.runtime), prepared, reg.capabilities);
+
+        // Route allowlist decisions into the shared egress audit log
+        if let Some(auditor) = self.egress_auditor() {
+            wrapper = wrapper.with_egress_auditor(auditor);
+        }
 
         // Apply overrides if provided
         if let Some(desc) = reg.description {

@@ -99,6 +99,11 @@ struct StoreData {
     /// Dedicated tokio runtime for HTTP requests, lazily initialized.
     /// Reused across multiple `http_request` calls within one execution.
     http_runtime: Option<tokio::runtime::Runtime>,
+    /// Tool name for egress audit events.
+    tool_name: String,
+    /// Egress audit sink: allowlist and leak-scan decisions land in the
+    /// same egress_events log as native tool egress.
+    egress_auditor: Option<Arc<crate::safety::EgressAuditor>>,
 }
 
 impl StoreData {
@@ -119,7 +124,43 @@ impl StoreData {
             credentials,
             host_credentials,
             http_runtime: None,
+            tool_name: String::new(),
+            egress_auditor: None,
         }
+    }
+
+    /// Record an egress decision in the shared audit log. Header values,
+    /// query strings, and bodies never enter the event — host/path only.
+    fn audit_egress(
+        &self,
+        method: &str,
+        url: &str,
+        decision: crate::safety::EgressDecision,
+        reason: &str,
+        leak_verdict: &str,
+    ) {
+        let Some(auditor) = &self.egress_auditor else {
+            return;
+        };
+        let (host, path) = match reqwest::Url::parse(url) {
+            Ok(parsed) => (
+                parsed.host_str().unwrap_or("").to_string(),
+                parsed.path().to_string(),
+            ),
+            Err(_) => (String::new(), String::new()),
+        };
+        auditor.record(crate::safety::EgressEvent {
+            id: uuid::Uuid::new_v4(),
+            ts: chrono::Utc::now(),
+            tool: self.tool_name.clone(),
+            method: method.to_string(),
+            host,
+            path,
+            decision,
+            mode: "wasm-allowlist".to_string(),
+            reason: reason.to_string(),
+            leak_verdict: leak_verdict.to_string(),
+        });
     }
 
     /// Inject credentials into a string by replacing placeholders.
@@ -266,9 +307,16 @@ impl near::agent::host::Host for StoreData {
         let injected_url = self.inject_credentials(&url, "url");
 
         // Check HTTP allowlist
-        self.host_state
-            .check_http_allowed(&injected_url, &method)
-            .map_err(|e| format!("HTTP not allowed: {}", e))?;
+        if let Err(e) = self.host_state.check_http_allowed(&injected_url, &method) {
+            self.audit_egress(
+                &method,
+                &injected_url,
+                crate::safety::EgressDecision::Denied,
+                &e,
+                "clean",
+            );
+            return Err(format!("HTTP not allowed: {}", e));
+        }
 
         // Record for rate limiting
         self.host_state
@@ -303,9 +351,24 @@ impl near::agent::host::Host for StoreData {
             .map(|(k, v)| (k.clone(), v.clone()))
             .collect();
 
-        leak_detector
-            .scan_http_request(&url, &header_vec, body.as_deref())
-            .map_err(|e| format!("Potential secret leak blocked: {}", e))?;
+        if let Err(e) = leak_detector.scan_http_request(&url, &header_vec, body.as_deref()) {
+            let verdict = format!("blocked: {}", e);
+            self.audit_egress(
+                &method,
+                &url,
+                crate::safety::EgressDecision::Denied,
+                "leak scan",
+                &verdict,
+            );
+            return Err(format!("Potential secret leak blocked: {}", e));
+        }
+        self.audit_egress(
+            &method,
+            &url,
+            crate::safety::EgressDecision::Allowed,
+            "matched tool allowlist",
+            "clean",
+        );
 
         // Get the max response size from capabilities (default 10MB).
         let max_response_bytes = self
@@ -464,6 +527,8 @@ pub struct WasmToolWrapper {
     secrets_store: Option<Arc<dyn SecretsStore + Send + Sync>>,
     /// OAuth refresh configuration for auto-refreshing expired tokens.
     oauth_refresh: Option<OAuthRefreshConfig>,
+    /// Egress audit sink shared with the native tool egress policy.
+    egress_auditor: Option<Arc<crate::safety::EgressAuditor>>,
 }
 
 impl WasmToolWrapper {
@@ -482,7 +547,15 @@ impl WasmToolWrapper {
             credentials: HashMap::new(),
             secrets_store: None,
             oauth_refresh: None,
+            egress_auditor: None,
         }
+    }
+
+    /// Route this tool's allowlist/leak-scan decisions into the shared
+    /// egress audit log.
+    pub fn with_egress_auditor(mut self, auditor: Arc<crate::safety::EgressAuditor>) -> Self {
+        self.egress_auditor = Some(auditor);
+        self
     }
 
     /// Override the tool description.
@@ -555,12 +628,14 @@ impl WasmToolWrapper {
         let limits = &self.prepared.limits;
 
         // Create store with fresh state (NEAR pattern: fresh instance per call)
-        let store_data = StoreData::new(
+        let mut store_data = StoreData::new(
             limits.memory_bytes,
             self.capabilities.clone(),
             self.credentials.clone(),
             host_credentials,
         );
+        store_data.tool_name = self.prepared.name.clone();
+        store_data.egress_auditor = self.egress_auditor.clone();
         let mut store = Store::new(engine, store_data);
 
         // Configure fuel if enabled
@@ -671,6 +746,7 @@ impl Tool for WasmToolWrapper {
         let description = self.description.clone();
         let schema = self.schema.clone();
         let credentials = self.credentials.clone();
+        let egress_auditor = self.egress_auditor.clone();
 
         // Execute in blocking task with timeout
         let result = tokio::time::timeout(timeout, async move {
@@ -683,6 +759,7 @@ impl Tool for WasmToolWrapper {
                 credentials,
                 secrets_store: None, // Not needed in blocking task
                 oauth_refresh: None, // Already used above for pre-refresh
+                egress_auditor,
             };
 
             tokio::task::spawn_blocking(move || {

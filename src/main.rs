@@ -875,9 +875,12 @@ async fn main() -> anyhow::Result<()> {
     };
     // Judge mode consults the cheap model when one is configured.
     let judge_llm = cheap_llm.clone().unwrap_or_else(|| llm.clone());
-    let egress_policy =
-        Arc::new(EgressPolicy::new(&config.egress, egress_auditor).with_judge(judge_llm));
+    let egress_policy = Arc::new(
+        EgressPolicy::new(&config.egress, Arc::clone(&egress_auditor)).with_judge(judge_llm),
+    );
     tools.register_sync(Arc::new(HttpTool::with_egress(egress_policy)));
+    // WASM tools registered from here on emit into the same audit log.
+    tools.set_egress_auditor(egress_auditor);
     tracing::info!(
         mode = %config.egress.mode,
         allow_rules = config.egress.allow.len(),
