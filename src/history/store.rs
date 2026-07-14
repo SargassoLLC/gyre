@@ -1168,6 +1168,20 @@ impl Store {
         Ok(row.get("cnt"))
     }
 
+    pub async fn update_routine_run_job_id(
+        &self,
+        run_id: Uuid,
+        job_id: Uuid,
+    ) -> Result<(), DatabaseError> {
+        let conn = self.conn().await?;
+        conn.execute(
+            "UPDATE routine_runs SET job_id = $2 WHERE id = $1",
+            &[&run_id, &job_id],
+        )
+        .await?;
+        Ok(())
+    }
+
     // ==================== Egress Events ====================
 
     /// Record an audited egress decision.

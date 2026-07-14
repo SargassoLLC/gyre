@@ -382,6 +382,15 @@ pub trait Database: Send + Sync {
     /// Count currently running runs for a routine.
     async fn count_running_routine_runs(&self, routine_id: Uuid) -> Result<i64, DatabaseError>;
 
+    /// Record the scheduler job_id on a routine run (called once, after the
+    /// full_job is submitted to the scheduler). The `routine_runs.job_id`
+    /// column already exists in both schemas; this only populates it.
+    async fn update_routine_run_job_id(
+        &self,
+        run_id: Uuid,
+        job_id: Uuid,
+    ) -> Result<(), DatabaseError>;
+
     // ==================== Egress Events ====================
 
     /// Record an audited egress decision.

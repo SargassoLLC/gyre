@@ -1726,6 +1726,21 @@ impl Database for LibSqlBackend {
         }
     }
 
+    async fn update_routine_run_job_id(
+        &self,
+        run_id: Uuid,
+        job_id: Uuid,
+    ) -> Result<(), DatabaseError> {
+        let conn = self.connect().await?;
+        conn.execute(
+            "UPDATE routine_runs SET job_id = ?2 WHERE id = ?1",
+            params![run_id.to_string(), job_id.to_string()],
+        )
+        .await
+        .map_err(|e| DatabaseError::Query(e.to_string()))?;
+        Ok(())
+    }
+
     // ==================== Egress Events ====================
 
     async fn record_egress_event(

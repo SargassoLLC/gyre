@@ -15,7 +15,9 @@
 pub mod hook;
 pub mod registry;
 pub mod session_ingestion;
+pub mod trusted_tools;
 
 pub use hook::{Hook, HookContext, HookError, HookEvent, HookFailureMode, HookOutcome, HookPoint};
 pub use registry::HookRegistry;
 pub use session_ingestion::SessionIngestionHook;
+pub use trusted_tools::TrustedToolsHook;

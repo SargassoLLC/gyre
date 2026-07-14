@@ -109,6 +109,10 @@ To review what the pipeline has learned:
 
 Or delete both routines to remove entirely. Your digest history and refutation log remain in workspace memory.
 
-## Current limitation
+## Full-job execution
 
-Both routines are `full_job` actions because they need web-search and memory tools. Routine full-job execution currently falls back to a single tool-less LLM call (scheduler integration pending — see `examples/brain-pipeline/IMPLEMENTATION_NOTES.md` for the plan). Until that lands, the pipeline cannot run autonomously; you can run it interactively today by asking Gyre to execute `prompts/harvest.md` in a normal session.
+Both routines are `full_job` actions because they need web-search and memory tools. Full-job routines run as real scheduler jobs through the worker reasoning loop with tool access, so the pipeline runs autonomously on its schedule.
+
+The workspace-internal memory tools (`memory_search`, `memory_write`, `memory_read`, `memory_tree`) are pre-approved for routines via a first-party trust hook and execute without a human in the loop. Web-search comes from an installed MCP/WASM extension: whether it runs unattended depends on that extension's own approval policy (declared in its `capabilities.json`). If your search extension is approval-gated, either grant it standing approval or add its tool name to a trust hook the same way memory tools are trusted. Destructive parameter combinations always require approval regardless of trust.
+
+Note: `routine_test` dry-runs a `full_job` as a single tool-less LLM call to stay side-effect-free (no memory writes, no notifications), so its judged output is an approximation of a real run. The report flags this in its caveats.

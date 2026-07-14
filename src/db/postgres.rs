@@ -431,6 +431,14 @@ impl Database for PgBackend {
         self.store.count_running_routine_runs(routine_id).await
     }
 
+    async fn update_routine_run_job_id(
+        &self,
+        run_id: Uuid,
+        job_id: Uuid,
+    ) -> Result<(), DatabaseError> {
+        self.store.update_routine_run_job_id(run_id, job_id).await
+    }
+
     // ==================== Egress Events ====================
 
     async fn record_egress_event(

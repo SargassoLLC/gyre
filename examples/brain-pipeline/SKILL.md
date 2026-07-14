@@ -41,6 +41,8 @@ Or create each routine manually with the `routine_create` tool using the trigger
 - The prompts state goals, not procedures — tune the *goal* (e.g., "surface at most 5 items") rather than adding step lists.
 - Pair with the novelty gate pattern (`docs/patterns/novelty-gate.md`) if you add your own autonomous stages.
 
-## Current limitation
+## Full-job execution
 
-Stages 1, 2, and 4 are `full_job` routines because they need memory tools. Routine full-job execution currently falls back to a single tool-less LLM call (scheduler integration pending — see `IMPLEMENTATION_NOTES.md`). Until that lands, those stages run degraded: they can reason over context paths but cannot write memory. The surface stage (lightweight, read-only) and the auto-recall retrieval layer work today.
+Stages 1, 2, and 4 are `full_job` routines because they need memory tools. Full-job routines run as real scheduler jobs through the worker reasoning loop with tool access — they can read and write memory during autonomous execution. The workspace-internal memory tools (`memory_search`, `memory_write`, `memory_read`, `memory_tree`) are pre-approved for routines via a first-party trust hook, so they execute without a human in the loop; any other approval-gated tool remains blocked, and destructive parameter combinations still require approval. The surface stage (lightweight, read-only) and the auto-recall retrieval layer complete the pipeline.
+
+Note: `routine_test` dry-runs a `full_job` as a single tool-less LLM call to stay side-effect-free (no memory writes, no notifications), so its judged output is an approximation of a real run. The report flags this in its caveats.

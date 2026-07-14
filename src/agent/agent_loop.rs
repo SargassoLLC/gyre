@@ -401,7 +401,19 @@ impl Agent {
                         self.llm().clone(),
                         Arc::clone(workspace),
                         notify_tx,
+                        Arc::clone(&self.scheduler),
+                        Arc::clone(&self.context_manager),
                     ));
+
+                    // Vouch for the workspace-internal memory tools so full_job
+                    // routines can read/write memory during autonomous execution
+                    // without a human in the loop. This uses the additive hook
+                    // tool-trust mechanism: it can only extend trust, and
+                    // destructive parameter combinations still require approval.
+                    self.deps
+                        .hooks
+                        .register(Arc::new(crate::hooks::TrustedToolsHook::memory_tools()))
+                        .await;
 
                     // Register routine tools
                     self.deps

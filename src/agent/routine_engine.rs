@@ -23,8 +23,10 @@ use crate::agent::attention::{ATTENTION_FORMAT_INSTRUCTIONS, parse_attention_rep
 use crate::agent::routine::{
     NotifyConfig, Routine, RoutineAction, RoutineRun, RunStatus, Trigger, next_cron_fire,
 };
+use crate::agent::scheduler::Scheduler;
 use crate::channels::{IncomingMessage, OutgoingResponse};
 use crate::config::RoutineConfig;
+use crate::context::{ContextManager, JobState};
 use crate::db::Database;
 use crate::llm::{ChatMessage, CompletionRequest, FinishReason, LlmProvider};
 use crate::workspace::Workspace;
@@ -115,6 +117,10 @@ pub struct RoutineEngine {
     workspace: Arc<Workspace>,
     /// Sender for notifications (routed to channel manager).
     notify_tx: mpsc::Sender<RoutineNotification>,
+    /// Scheduler used to run `full_job` routines as real parallel jobs.
+    scheduler: Arc<Scheduler>,
+    /// Context manager used to create and poll `full_job` job contexts.
+    context_manager: Arc<ContextManager>,
     /// Currently running routine count (across all routines).
     running_count: Arc<AtomicUsize>,
     /// Compiled event regex cache: routine_id -> compiled regex.
@@ -128,6 +134,8 @@ impl RoutineEngine {
         llm: Arc<dyn LlmProvider>,
         workspace: Arc<Workspace>,
         notify_tx: mpsc::Sender<RoutineNotification>,
+        scheduler: Arc<Scheduler>,
+        context_manager: Arc<ContextManager>,
     ) -> Self {
         Self {
             config,
@@ -135,6 +143,8 @@ impl RoutineEngine {
             llm,
             workspace,
             notify_tx,
+            scheduler,
+            context_manager,
             running_count: Arc::new(AtomicUsize::new(0)),
             event_cache: Arc::new(RwLock::new(Vec::new())),
         }
@@ -297,6 +307,8 @@ impl RoutineEngine {
             llm: self.llm.clone(),
             workspace: self.workspace.clone(),
             notify_tx: self.notify_tx.clone(),
+            scheduler: self.scheduler.clone(),
+            context_manager: self.context_manager.clone(),
             running_count: self.running_count.clone(),
             max_lightweight_tokens: self.config.max_lightweight_tokens,
         };
@@ -329,6 +341,8 @@ impl RoutineEngine {
             llm: self.llm.clone(),
             workspace: self.workspace.clone(),
             notify_tx: self.notify_tx.clone(),
+            scheduler: self.scheduler.clone(),
+            context_manager: self.context_manager.clone(),
             running_count: self.running_count.clone(),
             max_lightweight_tokens: self.config.max_lightweight_tokens,
         };
@@ -365,14 +379,19 @@ impl RoutineEngine {
             llm: self.llm.clone(),
             workspace: self.workspace.clone(),
             notify_tx: self.notify_tx.clone(),
+            scheduler: self.scheduler.clone(),
+            context_manager: self.context_manager.clone(),
             running_count: self.running_count.clone(),
             max_lightweight_tokens: self.config.max_lightweight_tokens,
         };
 
-        // Execute the action exactly as a live run would (FullJob currently
-        // dry-runs as lightweight, same as live execution) — but with no
-        // side effects beyond the LLM call itself. Dry-runs count toward
-        // the global concurrency cap like live runs.
+        // Dry-runs deliberately never schedule a real job. A live full_job
+        // runs through the scheduler with tool access, but the pre-flight
+        // check must be side-effect-free (safe to call on disabled routines,
+        // no memory writes, no notifications). So full_job is approximated
+        // here as a single tool-less LLM call over the description — the
+        // caveat below makes this approximation explicit to the caller.
+        // Dry-runs count toward the global concurrency cap like live runs.
         self.running_count.fetch_add(1, Ordering::Relaxed);
         let result = match &routine.action {
             RoutineAction::Lightweight {
@@ -390,8 +409,10 @@ impl RoutineEngine {
         let mut caveats = Vec::new();
         if matches!(routine.action, RoutineAction::FullJob { .. }) {
             caveats.push(
-                "full_job dry-run is approximate: it ran as a single tool-less \
-                 LLM call, so the judged output may differ from a real run"
+                "full_job dry-run is approximate: a live run executes through \
+                 the scheduler with tool access, but this pre-flight check ran \
+                 it as a single tool-less LLM call to stay side-effect-free, so \
+                 the judged output may differ from a real run"
                     .to_string(),
             );
         }
@@ -421,7 +442,9 @@ impl RoutineEngine {
             routine.description,
             routine.trigger.type_tag(),
             status,
-            summary.as_deref().unwrap_or("(no attention output — routine reported nothing to do)"),
+            summary
+                .as_deref()
+                .unwrap_or("(no attention output — routine reported nothing to do)"),
         );
 
         let judge_request =
@@ -480,6 +503,8 @@ struct EngineContext {
     llm: Arc<dyn LlmProvider>,
     workspace: Arc<Workspace>,
     notify_tx: mpsc::Sender<RoutineNotification>,
+    scheduler: Arc<Scheduler>,
+    context_manager: Arc<ContextManager>,
     running_count: Arc<AtomicUsize>,
     max_lightweight_tokens: u32,
 }
@@ -495,15 +520,11 @@ async fn execute_routine(ctx: EngineContext, routine: Routine, run: RoutineRun) 
             context_paths,
             max_tokens,
         } => execute_lightweight(&ctx, &routine, prompt, context_paths, *max_tokens).await,
-        RoutineAction::FullJob { description, .. } => {
-            // Full job mode: for now, execute as lightweight with the description
-            // as prompt. Full scheduler integration will come as a follow-up.
-            tracing::info!(
-                routine = %routine.name,
-                "FullJob mode executing as lightweight (scheduler integration pending)"
-            );
-            execute_lightweight(&ctx, &routine, description, &[], ctx.max_lightweight_tokens).await
-        }
+        RoutineAction::FullJob {
+            title,
+            description,
+            max_iterations,
+        } => execute_full_job(&ctx, &routine, run.id, title, description, *max_iterations).await,
     };
 
     // Decrement running count
@@ -675,6 +696,150 @@ async fn execute_lightweight(
         Ok((RunStatus::Attention, report.summary, tokens_used))
     } else {
         Ok((RunStatus::Ok, None, tokens_used))
+    }
+}
+
+/// Execute a `full_job` routine as a real scheduler job.
+///
+/// Unlike lightweight routines (a single tool-less LLM call), a full job is
+/// submitted to the `Scheduler` and runs through the worker reasoning loop
+/// with tool access. Memory tools are approved for autonomous execution via
+/// the registered `TrustedToolsHook`; all other approval-gated tools remain
+/// blocked. The `job_id` is recorded on the routine run row, then this fn
+/// polls until the job reaches a terminal state and maps that to a
+/// `RunStatus` for the caller's central notification path.
+async fn execute_full_job(
+    ctx: &EngineContext,
+    routine: &Routine,
+    run_id: Uuid,
+    title: &str,
+    description: &str,
+    max_iterations: u32,
+) -> Result<(RunStatus, Option<String>, Option<i32>), String> {
+    // Create a job context scoped to this routine's user.
+    let job_id = ctx
+        .context_manager
+        .create_job_for_user(&routine.user_id, title, description)
+        .await
+        .map_err(|e| format!("failed to create job context: {e}"))?;
+
+    // Store max_iterations and routine provenance in the job metadata for
+    // observability. The worker enforces its own hard iteration cap; the
+    // routine's own limit is advisory context surfaced via the DB.
+    let routine_name_clone = routine.name.clone();
+    if let Err(e) = ctx
+        .context_manager
+        .update_context(job_id, move |jctx| {
+            // Ensure metadata is an object (defaults to null).
+            if !jctx.metadata.is_object() {
+                jctx.metadata = serde_json::json!({});
+            }
+            if let Some(obj) = jctx.metadata.as_object_mut() {
+                obj.insert(
+                    "routine_max_iterations".to_string(),
+                    serde_json::Value::Number(max_iterations.into()),
+                );
+                obj.insert(
+                    "routine_name".to_string(),
+                    serde_json::Value::String(routine_name_clone),
+                );
+            }
+        })
+        .await
+    {
+        tracing::warn!(
+            routine = %routine.name,
+            "Failed to set job metadata: {}", e
+        );
+    }
+
+    // Persist the job record so it is visible in job listings.
+    if let Ok(jctx) = ctx.context_manager.get_context(job_id).await {
+        let store = ctx.store.clone();
+        tokio::spawn(async move {
+            if let Err(e) = store.save_job(&jctx).await {
+                tracing::warn!("Failed to persist routine job {}: {}", job_id, e);
+            }
+        });
+    }
+
+    // Record job_id on the run row immediately (best-effort).
+    if let Err(e) = ctx.store.update_routine_run_job_id(run_id, job_id).await {
+        tracing::warn!(
+            routine = %routine.name,
+            run = %run_id,
+            "Failed to record job_id on routine run: {}", e
+        );
+    }
+
+    // Submit to the scheduler. The worker path handles tool execution with
+    // safety + hooks (including any registered TrustedToolsHook grants).
+    if let Err(e) = ctx.scheduler.schedule(job_id).await {
+        return Err(format!("scheduler refused job: {e}"));
+    }
+
+    tracing::info!(
+        routine = %routine.name,
+        job = %job_id,
+        "FullJob scheduled; polling for completion"
+    );
+
+    // Poll until the job reaches a terminal state. Use an exponential
+    // back-off within a bounded range to avoid busy-spinning on long jobs.
+    let poll_interval_ms: u64 = 500;
+    let max_poll_ms: u64 = 5_000;
+    let mut interval_ms = poll_interval_ms;
+
+    loop {
+        tokio::time::sleep(Duration::from_millis(interval_ms)).await;
+        interval_ms = (interval_ms * 2).min(max_poll_ms);
+
+        let job_ctx = match ctx.context_manager.get_context(job_id).await {
+            Ok(c) => c,
+            Err(e) => {
+                return Err(format!("lost job context while polling: {e}"));
+            }
+        };
+
+        match job_ctx.state {
+            JobState::Completed | JobState::Accepted | JobState::Submitted => {
+                tracing::info!(
+                    routine = %routine.name,
+                    job = %job_id,
+                    state = ?job_ctx.state,
+                    "FullJob finished successfully"
+                );
+                let summary = Some(format!("Job {} completed ({})", job_id, job_ctx.state));
+                return Ok((RunStatus::Ok, summary, None));
+            }
+            JobState::Failed => {
+                let reason = job_ctx
+                    .transitions
+                    .last()
+                    .and_then(|t| t.reason.clone())
+                    .unwrap_or_else(|| "unknown reason".to_string());
+                tracing::warn!(
+                    routine = %routine.name,
+                    job = %job_id,
+                    "FullJob failed: {}", reason
+                );
+                return Err(format!("job {} failed: {}", job_id, reason));
+            }
+            JobState::Cancelled => {
+                return Err(format!("job {} was cancelled", job_id));
+            }
+            JobState::Stuck => {
+                // Self-repair may recover it; keep polling for a while.
+                tracing::warn!(
+                    routine = %routine.name,
+                    job = %job_id,
+                    "FullJob is stuck — waiting for self-repair"
+                );
+            }
+            JobState::Pending | JobState::InProgress => {
+                // Still running; keep polling.
+            }
+        }
     }
 }
 
