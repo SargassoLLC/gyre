@@ -311,6 +311,7 @@ impl RoutineEngine {
             context_manager: self.context_manager.clone(),
             running_count: self.running_count.clone(),
             max_lightweight_tokens: self.config.max_lightweight_tokens,
+            full_job_timeout_secs: self.config.full_job_timeout_secs,
         };
 
         tokio::spawn(async move {
@@ -345,6 +346,7 @@ impl RoutineEngine {
             context_manager: self.context_manager.clone(),
             running_count: self.running_count.clone(),
             max_lightweight_tokens: self.config.max_lightweight_tokens,
+            full_job_timeout_secs: self.config.full_job_timeout_secs,
         };
 
         // Record the run in DB, then spawn execution
@@ -383,6 +385,7 @@ impl RoutineEngine {
             context_manager: self.context_manager.clone(),
             running_count: self.running_count.clone(),
             max_lightweight_tokens: self.config.max_lightweight_tokens,
+            full_job_timeout_secs: self.config.full_job_timeout_secs,
         };
 
         // Dry-runs deliberately never schedule a real job. A live full_job
@@ -507,6 +510,7 @@ struct EngineContext {
     context_manager: Arc<ContextManager>,
     running_count: Arc<AtomicUsize>,
     max_lightweight_tokens: u32,
+    full_job_timeout_secs: u64,
 }
 
 /// Execute a routine run. Handles both lightweight and full_job modes.
@@ -784,8 +788,41 @@ async fn execute_full_job(
         "FullJob scheduled; polling for completion"
     );
 
-    // Poll until the job reaches a terminal state. Use an exponential
-    // back-off within a bounded range to avoid busy-spinning on long jobs.
+    // Poll until the job reaches a terminal state, bounded by a hard
+    // deadline. A permanently stuck job (self-repair gives up after max
+    // attempts) must not hold this routine's concurrency slot forever —
+    // that would starve ROUTINES_MAX_CONCURRENT for every other routine.
+    let deadline = Duration::from_secs(ctx.full_job_timeout_secs);
+    let polled = tokio::time::timeout(deadline, poll_job_to_terminal(ctx, routine, job_id)).await;
+
+    match polled {
+        Ok(result) => result,
+        Err(_) => {
+            tracing::warn!(
+                routine = %routine.name,
+                job = %job_id,
+                timeout_secs = ctx.full_job_timeout_secs,
+                "FullJob exceeded deadline; cancelling"
+            );
+            if let Err(e) = ctx.scheduler.stop(job_id).await {
+                tracing::warn!(job = %job_id, "Failed to cancel timed-out job: {}", e);
+            }
+            Err(format!(
+                "job {} exceeded the full_job timeout of {}s and was cancelled",
+                job_id, ctx.full_job_timeout_secs
+            ))
+        }
+    }
+}
+
+/// Poll a scheduled job until it reaches a terminal state. Uses exponential
+/// back-off within a bounded range to avoid busy-spinning on long jobs.
+/// The caller bounds this with the full_job deadline.
+async fn poll_job_to_terminal(
+    ctx: &EngineContext,
+    routine: &Routine,
+    job_id: Uuid,
+) -> Result<(RunStatus, Option<String>, Option<i32>), String> {
     let poll_interval_ms: u64 = 500;
     let max_poll_ms: u64 = 5_000;
     let mut interval_ms = poll_interval_ms;
@@ -829,7 +866,8 @@ async fn execute_full_job(
                 return Err(format!("job {} was cancelled", job_id));
             }
             JobState::Stuck => {
-                // Self-repair may recover it; keep polling for a while.
+                // Self-repair may recover it; the full_job deadline bounds
+                // how long we wait for that.
                 tracing::warn!(
                     routine = %routine.name,
                     job = %job_id,

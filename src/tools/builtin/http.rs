@@ -29,25 +29,30 @@ pub struct HttpTool {
 
 impl HttpTool {
     /// Create a new HTTP tool (leak scan only, no egress policy).
-    pub fn new() -> Self {
+    ///
+    /// Errors if the TLS-backed HTTP client cannot be initialized (e.g.,
+    /// no TLS backend available on a minimal OS image).
+    pub fn new() -> Result<Self, ToolError> {
         let client = Client::builder()
             .timeout(Duration::from_secs(30))
             .redirect(reqwest::redirect::Policy::none())
             .build()
-            .expect("Failed to create HTTP client");
+            .map_err(|e| {
+                ToolError::ExecutionFailed(format!("failed to create HTTP client: {}", e))
+            })?;
 
-        Self {
+        Ok(Self {
             client,
             egress: None,
-        }
+        })
     }
 
     /// Create an HTTP tool gated by an egress policy (leak scan + host
     /// rules + audit, per docs/design/egress-policy.md).
-    pub fn with_egress(egress: Arc<EgressPolicy>) -> Self {
-        let mut tool = Self::new();
+    pub fn with_egress(egress: Arc<EgressPolicy>) -> Result<Self, ToolError> {
+        let mut tool = Self::new()?;
         tool.egress = Some(egress);
-        tool
+        Ok(tool)
     }
 }
 
@@ -58,6 +63,15 @@ fn validate_url(url: &str) -> Result<reqwest::Url, ToolError> {
     if parsed.scheme() != "https" {
         return Err(ToolError::NotAuthorized(
             "only https URLs are allowed".to_string(),
+        ));
+    }
+
+    // Reject userinfo: reqwest forwards `https://user:pass@host/` credentials
+    // as Basic Auth, so embedded credentials in a model-supplied URL would be
+    // exfiltrated to the destination. The WASM wrapper rejects this too.
+    if !parsed.username().is_empty() || parsed.password().is_some() {
+        return Err(ToolError::NotAuthorized(
+            "URLs with embedded credentials (userinfo) are not allowed".to_string(),
         ));
     }
 
@@ -157,12 +171,6 @@ fn parse_headers_param(
         Some(_) => Err(ToolError::InvalidParameters(
             "'headers' must be an object or an array of {name, value}".to_string(),
         )),
-    }
-}
-
-impl Default for HttpTool {
-    fn default() -> Self {
-        Self::new()
     }
 }
 
@@ -397,14 +405,14 @@ mod tests {
 
     #[test]
     fn test_http_tool_schema_body_has_type() {
-        let tool = HttpTool::new();
+        let tool = HttpTool::new().unwrap();
         let schema = tool.parameters_schema();
         assert_eq!(schema["properties"]["body"]["type"], "string");
     }
 
     #[test]
     fn test_http_tool_schema_headers_is_array() {
-        let tool = HttpTool::new();
+        let tool = HttpTool::new().unwrap();
         let schema = tool.parameters_schema();
         assert_eq!(schema["properties"]["headers"]["type"], "array");
     }
@@ -413,6 +421,14 @@ mod tests {
     fn test_validate_url_rejects_http() {
         let err = validate_url("http://example.com").unwrap_err();
         assert!(err.to_string().contains("https"));
+    }
+
+    #[test]
+    fn test_validate_url_rejects_userinfo() {
+        let err = validate_url("https://user:sk-secret@api.example.com/v1").unwrap_err();
+        assert!(err.to_string().contains("userinfo"));
+        let err = validate_url("https://token@api.example.com/v1").unwrap_err();
+        assert!(err.to_string().contains("userinfo"));
     }
 
     #[test]

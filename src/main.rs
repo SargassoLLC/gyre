@@ -878,7 +878,11 @@ async fn main() -> anyhow::Result<()> {
     let egress_policy = Arc::new(
         EgressPolicy::new(&config.egress, Arc::clone(&egress_auditor)).with_judge(judge_llm),
     );
-    tools.register_sync(Arc::new(HttpTool::with_egress(egress_policy)));
+    // A failed build here must abort startup: falling back would leave the
+    // un-gated http instance from register_builtin_tools() in place.
+    let gated_http = HttpTool::with_egress(egress_policy)
+        .map_err(|e| anyhow::anyhow!("failed to build egress-gated http tool: {e}"))?;
+    tools.register_sync(Arc::new(gated_http));
     // WASM tools registered from here on emit into the same audit log.
     tools.set_egress_auditor(egress_auditor);
     tracing::info!(

@@ -147,9 +147,49 @@ impl SelfRepair for DefaultSelfRepair {
     async fn repair_stuck_job(&self, job: &StuckJob) -> Result<RepairResult, RepairError> {
         // Check if we've exceeded max repair attempts
         if job.repair_attempts >= self.max_repair_attempts {
+            // A job past its repair budget must reach a terminal state.
+            // Anything waiting on it (full_job routine pollers, listings)
+            // depends on Stuck eventually resolving — logging alone would
+            // leave it Stuck forever.
+            let reason = format!(
+                "exceeded maximum repair attempts ({})",
+                self.max_repair_attempts
+            );
+            let transition = self
+                .context_manager
+                .update_context(job.job_id, |ctx| {
+                    ctx.transition_to(JobState::Failed, Some(reason.clone()))
+                })
+                .await;
+            match transition {
+                Ok(Ok(())) => {
+                    if let Some(store) = &self.store
+                        && let Err(e) = store
+                            .update_job_status(job.job_id, JobState::Failed, Some(&reason))
+                            .await
+                    {
+                        tracing::warn!(
+                            job = %job.job_id,
+                            "Failed to persist Failed status for unrepairable job: {}", e
+                        );
+                    }
+                }
+                Ok(Err(e)) => {
+                    tracing::warn!(
+                        job = %job.job_id,
+                        "Could not fail unrepairable job (transition refused): {}", e
+                    );
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        job = %job.job_id,
+                        "Could not fail unrepairable job (context error): {}", e
+                    );
+                }
+            }
             return Ok(RepairResult::ManualRequired {
                 message: format!(
-                    "Job {} has exceeded maximum repair attempts ({})",
+                    "Job {} has exceeded maximum repair attempts ({}); marked Failed",
                     job.job_id, self.max_repair_attempts
                 ),
             });

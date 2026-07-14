@@ -196,7 +196,11 @@ impl ToolRegistry {
         self.register_sync(Arc::new(EchoTool));
         self.register_sync(Arc::new(TimeTool));
         self.register_sync(Arc::new(JsonTool));
-        self.register_sync(Arc::new(HttpTool::new()));
+        match HttpTool::new() {
+            Ok(http) => self.register_sync(Arc::new(http)),
+            // No TLS client → no http tool; everything else still works.
+            Err(e) => tracing::error!("http tool unavailable: {}", e),
+        }
 
         tracing::info!("Registered {} built-in tools", self.count());
     }

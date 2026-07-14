@@ -975,6 +975,8 @@ impl EgressConfig {
             Some(s) => split_host_list(&s),
             None => es.deny.clone(),
         };
+        warn_unmatchable_host_rules("allow", &allow);
+        warn_unmatchable_host_rules("deny", &deny);
 
         Ok(Self {
             mode,
@@ -989,12 +991,31 @@ impl EgressConfig {
 }
 
 /// Split a comma-separated host list, trimming whitespace and dropping empties.
+///
+/// A bare comma (`EGRESS_ALLOW=,`) is the explicit-empty-list sentinel:
+/// an empty env var reads as *unset* and falls back to TOML/settings.
 fn split_host_list(s: &str) -> Vec<String> {
     s.split(',')
         .map(str::trim)
         .filter(|h| !h.is_empty())
         .map(String::from)
         .collect()
+}
+
+/// Warn about egress rules that can never match. `host_matches` compares
+/// against `Url::host_str()`, which never carries a port — a rule like
+/// `api.internal:8443` silently denies (enforce) or never fires (deny).
+fn warn_unmatchable_host_rules(list_name: &str, rules: &[String]) {
+    for rule in rules {
+        if rule.contains(':') {
+            tracing::warn!(
+                rule = %rule,
+                list = list_name,
+                "egress rule contains ':' (port or IPv6) — host matching \
+                 never sees ports, so this rule will never match; drop the port"
+            );
+        }
+    }
 }
 
 /// WASM sandbox configuration.
@@ -1294,6 +1315,10 @@ pub struct RoutineConfig {
     pub default_cooldown_secs: u64,
     /// Max output tokens for lightweight routine LLM calls.
     pub max_lightweight_tokens: u32,
+    /// Hard deadline (seconds) for a full_job routine's scheduled job.
+    /// On expiry the job is cancelled and the run fails — a permanently
+    /// stuck job must not hold a routine concurrency slot forever.
+    pub full_job_timeout_secs: u64,
 }
 
 impl Default for RoutineConfig {
@@ -1304,6 +1329,7 @@ impl Default for RoutineConfig {
             max_concurrent_routines: 10,
             default_cooldown_secs: 300,
             max_lightweight_tokens: 4096,
+            full_job_timeout_secs: 3600,
         }
     }
 }
@@ -1323,6 +1349,7 @@ impl RoutineConfig {
             max_concurrent_routines: parse_optional_env("ROUTINES_MAX_CONCURRENT", 10)?,
             default_cooldown_secs: parse_optional_env("ROUTINES_DEFAULT_COOLDOWN", 300)?,
             max_lightweight_tokens: parse_optional_env("ROUTINES_MAX_TOKENS", 4096)?,
+            full_job_timeout_secs: parse_optional_env("ROUTINES_FULL_JOB_TIMEOUT_SECS", 3600)?,
         })
     }
 }
