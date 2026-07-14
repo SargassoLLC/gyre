@@ -431,6 +431,22 @@ impl Database for PgBackend {
         self.store.count_running_routine_runs(routine_id).await
     }
 
+    // ==================== Egress Events ====================
+
+    async fn record_egress_event(
+        &self,
+        event: &crate::safety::EgressEvent,
+    ) -> Result<(), DatabaseError> {
+        self.store.record_egress_event(event).await
+    }
+
+    async fn list_egress_events(
+        &self,
+        limit: i64,
+    ) -> Result<Vec<crate::safety::EgressEvent>, DatabaseError> {
+        self.store.list_egress_events(limit).await
+    }
+
     // ==================== Tool Failures ====================
 
     async fn record_tool_failure(

@@ -1167,6 +1167,54 @@ impl Store {
             .await?;
         Ok(row.get("cnt"))
     }
+
+    // ==================== Egress Events ====================
+
+    /// Record an audited egress decision.
+    pub async fn record_egress_event(
+        &self,
+        event: &crate::safety::EgressEvent,
+    ) -> Result<(), DatabaseError> {
+        let conn = self.conn().await?;
+        let decision = event.decision.as_str();
+        conn.execute(
+            r#"
+            INSERT INTO egress_events (
+                id, ts, tool, method, host, path,
+                decision, mode, reason, leak_verdict
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+            "#,
+            &[
+                &event.id,
+                &event.ts,
+                &event.tool,
+                &event.method,
+                &event.host,
+                &event.path,
+                &decision,
+                &event.mode,
+                &event.reason,
+                &event.leak_verdict,
+            ],
+        )
+        .await?;
+        Ok(())
+    }
+
+    /// List recent egress events, newest first.
+    pub async fn list_egress_events(
+        &self,
+        limit: i64,
+    ) -> Result<Vec<crate::safety::EgressEvent>, DatabaseError> {
+        let conn = self.conn().await?;
+        let rows = conn
+            .query(
+                "SELECT * FROM egress_events ORDER BY ts DESC LIMIT $1",
+                &[&limit],
+            )
+            .await?;
+        rows.iter().map(row_to_egress_event).collect()
+    }
 }
 
 #[cfg(feature = "postgres")]
@@ -1211,6 +1259,28 @@ fn row_to_routine(row: &tokio_postgres::Row) -> Result<Routine, DatabaseError> {
         state: row.get("state"),
         created_at: row.get("created_at"),
         updated_at: row.get("updated_at"),
+    })
+}
+
+#[cfg(feature = "postgres")]
+fn row_to_egress_event(
+    row: &tokio_postgres::Row,
+) -> Result<crate::safety::EgressEvent, DatabaseError> {
+    let decision_str: String = row.get("decision");
+    let decision = crate::safety::EgressDecision::parse(&decision_str)
+        .map_err(DatabaseError::Serialization)?;
+
+    Ok(crate::safety::EgressEvent {
+        id: row.get("id"),
+        ts: row.get("ts"),
+        tool: row.get("tool"),
+        method: row.get("method"),
+        host: row.get("host"),
+        path: row.get("path"),
+        decision,
+        mode: row.get("mode"),
+        reason: row.get("reason"),
+        leak_verdict: row.get("leak_verdict"),
     })
 }
 

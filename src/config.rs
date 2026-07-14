@@ -32,6 +32,7 @@ pub struct Config {
     pub channels: ChannelsConfig,
     pub agent: AgentConfig,
     pub safety: SafetyConfig,
+    pub egress: EgressConfig,
     pub wasm: WasmConfig,
     pub secrets: SecretsConfig,
     pub builder: BuilderModeConfig,
@@ -156,6 +157,7 @@ impl Config {
             channels: ChannelsConfig::resolve(settings)?,
             agent: AgentConfig::resolve(settings)?,
             safety: SafetyConfig::resolve()?,
+            egress: EgressConfig::resolve(settings)?,
             wasm: WasmConfig::resolve()?,
             secrets: SecretsConfig::resolve().await?,
             builder: BuilderModeConfig::resolve()?,
@@ -935,6 +937,64 @@ impl SafetyConfig {
                 .unwrap_or(true),
         })
     }
+}
+
+/// Egress policy configuration (`[egress]` in config.toml + env overrides).
+///
+/// Governs outbound network access from native tools (`http`, built tools).
+/// Rules are boundaries, not judgment: exact or `*.suffix` host matching only.
+#[derive(Debug, Clone)]
+pub struct EgressConfig {
+    /// What happens to egress matching no rule.
+    pub mode: crate::safety::EgressMode,
+    /// Allowed hosts (exact or `*.suffix`).
+    pub allow: Vec<String>,
+    /// Denied hosts (same syntax). Deny wins over allow, in every mode.
+    pub deny: Vec<String>,
+    /// Judge-mode LLM timeout in ms; on expiry the request is denied.
+    pub judge_max_latency_ms: u64,
+}
+
+impl EgressConfig {
+    fn resolve(settings: &Settings) -> Result<Self, ConfigError> {
+        let es = &settings.egress;
+
+        let mode_str = optional_env("EGRESS_MODE")?.unwrap_or_else(|| es.mode.clone());
+        let mode = crate::safety::EgressMode::parse(&mode_str).map_err(|message| {
+            ConfigError::InvalidValue {
+                key: "EGRESS_MODE".to_string(),
+                message,
+            }
+        })?;
+
+        let allow = match optional_env("EGRESS_ALLOW")? {
+            Some(s) => split_host_list(&s),
+            None => es.allow.clone(),
+        };
+        let deny = match optional_env("EGRESS_DENY")? {
+            Some(s) => split_host_list(&s),
+            None => es.deny.clone(),
+        };
+
+        Ok(Self {
+            mode,
+            allow,
+            deny,
+            judge_max_latency_ms: parse_optional_env(
+                "EGRESS_JUDGE_MAX_LATENCY_MS",
+                es.judge_max_latency_ms,
+            )?,
+        })
+    }
+}
+
+/// Split a comma-separated host list, trimming whitespace and dropping empties.
+fn split_host_list(s: &str) -> Vec<String> {
+    s.split(',')
+        .map(str::trim)
+        .filter(|h| !h.is_empty())
+        .map(String::from)
+        .collect()
 }
 
 /// WASM sandbox configuration.

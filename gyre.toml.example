@@ -94,6 +94,26 @@
 # max_output_length = 100000
 # injection_check_enabled = true
 
+# ─── Egress policy ───────────────────────────────────────────────────
+# Network boundary for native tools (http, built tools). Every outbound
+# request is leak-scanned, matched against host rules, and audited to the
+# egress_events table. Rules are exact hosts or "*.suffix" (subdomains
+# only — list the apex separately). Deny wins over allow, in every mode.
+#
+# mode governs hosts matching NO rule:
+#   observe — allow + audit (default; zero blocking risk)
+#   enforce — deny + audit
+#   judge   — one LLM call decides; fails closed on timeout/parse error
+#
+# Shell subprocesses (curl etc.) can't be intercepted in-process: run the
+# main session in the Docker sandbox profile, or set HTTP_PROXY/HTTPS_PROXY
+# to a filtering proxy for that layer.
+# [egress]
+# mode = "observe"
+# allow = ["api.anthropic.com", "api.openai.com", "*.githubusercontent.com"]
+# deny = []
+# judge_max_latency_ms = 3000
+
 # ─── Builder ─────────────────────────────────────────────────────────
 # [builder]
 # enabled = true

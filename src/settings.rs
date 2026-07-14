@@ -99,6 +99,10 @@ pub struct Settings {
     #[serde(default)]
     pub safety: SafetySettings,
 
+    /// Egress policy configuration.
+    #[serde(default)]
+    pub egress: EgressSettings,
+
     /// Builder configuration.
     #[serde(default)]
     pub builder: BuilderSettings,
@@ -519,6 +523,45 @@ impl Default for SafetySettings {
         Self {
             max_output_length: default_max_output_length(),
             injection_check_enabled: true,
+        }
+    }
+}
+
+/// Egress policy configuration (`[egress]` in config.toml).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EgressSettings {
+    /// What happens to egress matching no rule: "observe" | "enforce" | "judge".
+    #[serde(default = "default_egress_mode")]
+    pub mode: String,
+
+    /// Allowed hosts: exact ("api.anthropic.com") or suffix ("*.githubusercontent.com").
+    #[serde(default)]
+    pub allow: Vec<String>,
+
+    /// Denied hosts (same syntax). Deny wins over allow, in every mode.
+    #[serde(default)]
+    pub deny: Vec<String>,
+
+    /// Judge-mode LLM timeout; on expiry the request is denied (fail closed).
+    #[serde(default = "default_egress_judge_max_latency_ms")]
+    pub judge_max_latency_ms: u64,
+}
+
+fn default_egress_mode() -> String {
+    "observe".to_string()
+}
+
+fn default_egress_judge_max_latency_ms() -> u64 {
+    3000
+}
+
+impl Default for EgressSettings {
+    fn default() -> Self {
+        Self {
+            mode: default_egress_mode(),
+            allow: Vec::new(),
+            deny: Vec::new(),
+            judge_max_latency_ms: default_egress_judge_max_latency_ms(),
         }
     }
 }

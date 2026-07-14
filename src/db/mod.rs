@@ -35,6 +35,7 @@ use crate::history::{
     ConversationMessage, ConversationSummary, JobEventRecord, LlmCallRecord, SandboxJobRecord,
     SandboxJobSummary, SettingRow,
 };
+use crate::safety::EgressEvent;
 use crate::workspace::{MemoryChunk, MemoryDocument, WorkspaceEntry};
 use crate::workspace::{SearchConfig, SearchResult};
 
@@ -380,6 +381,14 @@ pub trait Database: Send + Sync {
 
     /// Count currently running runs for a routine.
     async fn count_running_routine_runs(&self, routine_id: Uuid) -> Result<i64, DatabaseError>;
+
+    // ==================== Egress Events ====================
+
+    /// Record an audited egress decision.
+    async fn record_egress_event(&self, event: &EgressEvent) -> Result<(), DatabaseError>;
+
+    /// List recent egress events, newest first.
+    async fn list_egress_events(&self, limit: i64) -> Result<Vec<EgressEvent>, DatabaseError>;
 
     // ==================== Tool Failures ====================
 

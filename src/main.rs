@@ -33,10 +33,11 @@ use gyre::{
         api::OrchestratorState,
     },
     pairing::PairingStore,
-    safety::SafetyLayer,
+    safety::{EgressAuditor, EgressPolicy, SafetyLayer},
     secrets::SecretsStore,
     tools::{
         ToolRegistry,
+        builtin::HttpTool,
         mcp::{McpClient, McpSessionManager, config::load_mcp_servers_from_db, is_authenticated},
         wasm::{WasmToolLoader, WasmToolRuntime, load_dev_tools},
     },
@@ -864,6 +865,22 @@ async fn main() -> anyhow::Result<()> {
         let workspace = Arc::new(workspace);
         tools.register_memory_tools(workspace);
     }
+
+    // Egress policy on the native HTTP tool: leak scan + host rules + audit
+    // to egress_events (docs/design/egress-policy.md). Re-registering "http"
+    // replaces the bare instance from register_builtin_tools().
+    let egress_auditor = match &db {
+        Some(db) => EgressAuditor::spawn(Arc::clone(db)),
+        None => EgressAuditor::log_only(),
+    };
+    let egress_policy = Arc::new(EgressPolicy::new(&config.egress, egress_auditor));
+    tools.register_sync(Arc::new(HttpTool::with_egress(egress_policy)));
+    tracing::info!(
+        mode = %config.egress.mode,
+        allow_rules = config.egress.allow.len(),
+        deny_rules = config.egress.deny.len(),
+        "Egress policy active on native HTTP tool"
+    );
 
     // Register builder tool if enabled.
     // When sandbox is enabled and allow_local_tools is false, skip builder registration

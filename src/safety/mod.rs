@@ -7,11 +7,16 @@
 //! - Enforcing safety policies
 //! - Detecting secret leakage in outputs
 
+mod egress;
 mod leak_detector;
 mod policy;
 mod sanitizer;
 mod validator;
 
+pub use egress::{
+    EgressAuditor, EgressDecision, EgressError, EgressEvent, EgressMode, EgressPolicy,
+    EgressRequest,
+};
 pub use leak_detector::{
     LeakAction, LeakDetectionError, LeakDetector, LeakMatch, LeakPattern, LeakScanResult,
     LeakSeverity,

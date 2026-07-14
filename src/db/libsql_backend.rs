@@ -1726,6 +1726,63 @@ impl Database for LibSqlBackend {
         }
     }
 
+    // ==================== Egress Events ====================
+
+    async fn record_egress_event(
+        &self,
+        event: &crate::safety::EgressEvent,
+    ) -> Result<(), DatabaseError> {
+        let conn = self.connect().await?;
+        conn.execute(
+            r#"
+                INSERT INTO egress_events (
+                    id, ts, tool, method, host, path,
+                    decision, mode, reason, leak_verdict
+                ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+                "#,
+            params![
+                event.id.to_string(),
+                fmt_ts(&event.ts),
+                event.tool.as_str(),
+                event.method.as_str(),
+                event.host.as_str(),
+                event.path.as_str(),
+                event.decision.as_str(),
+                event.mode.as_str(),
+                event.reason.as_str(),
+                event.leak_verdict.as_str(),
+            ],
+        )
+        .await
+        .map_err(|e| DatabaseError::Query(e.to_string()))?;
+        Ok(())
+    }
+
+    async fn list_egress_events(
+        &self,
+        limit: i64,
+    ) -> Result<Vec<crate::safety::EgressEvent>, DatabaseError> {
+        let conn = self.connect().await?;
+        let mut rows = conn
+            .query(
+                "SELECT id, ts, tool, method, host, path, decision, mode, reason, leak_verdict \
+                 FROM egress_events ORDER BY ts DESC LIMIT ?1",
+                params![limit],
+            )
+            .await
+            .map_err(|e| DatabaseError::Query(e.to_string()))?;
+
+        let mut events = Vec::new();
+        while let Some(row) = rows
+            .next()
+            .await
+            .map_err(|e| DatabaseError::Query(e.to_string()))?
+        {
+            events.push(row_to_egress_event_libsql(&row)?);
+        }
+        Ok(events)
+    }
+
     // ==================== Tool Failures ====================
 
     async fn record_tool_failure(
@@ -2664,6 +2721,28 @@ fn row_to_routine_libsql(row: &libsql::Row) -> Result<Routine, DatabaseError> {
     })
 }
 
+fn row_to_egress_event_libsql(
+    row: &libsql::Row,
+) -> Result<crate::safety::EgressEvent, DatabaseError> {
+    let decision = crate::safety::EgressDecision::parse(&get_text(row, 6))
+        .map_err(DatabaseError::Serialization)?;
+
+    Ok(crate::safety::EgressEvent {
+        id: get_text(row, 0)
+            .parse()
+            .map_err(|e: uuid::Error| DatabaseError::Serialization(e.to_string()))?,
+        ts: get_ts(row, 1),
+        tool: get_text(row, 2),
+        method: get_text(row, 3),
+        host: get_text(row, 4),
+        path: get_text(row, 5),
+        decision,
+        mode: get_text(row, 7),
+        reason: get_text(row, 8),
+        leak_verdict: get_text(row, 9),
+    })
+}
+
 fn row_to_routine_run_libsql(row: &libsql::Row) -> Result<RoutineRun, DatabaseError> {
     let status_str = get_text(row, 5);
     let status: RunStatus = status_str
@@ -2689,6 +2768,45 @@ fn row_to_routine_run_libsql(row: &libsql::Row) -> Result<RoutineRun, DatabaseEr
 mod tests {
     use crate::db::Database;
     use crate::db::libsql_backend::LibSqlBackend;
+
+    #[tokio::test]
+    #[ignore = "libsql global state conflicts in full suite; passes when run individually"]
+    async fn test_egress_event_roundtrip() {
+        use crate::safety::{EgressDecision, EgressEvent};
+
+        // File-backed: with connection-per-operation, each connection to a
+        // ":memory:" database sees its own empty store.
+        let dir = tempfile::tempdir().unwrap();
+        let backend = LibSqlBackend::new_local(&dir.path().join("egress-test.db"))
+            .await
+            .unwrap();
+        backend.run_migrations().await.unwrap();
+
+        let event = EgressEvent {
+            id: uuid::Uuid::new_v4(),
+            ts: chrono::Utc::now(),
+            tool: "http".to_string(),
+            method: "GET".to_string(),
+            host: "api.example.com".to_string(),
+            path: "/v1/data".to_string(),
+            decision: EgressDecision::Allowed,
+            mode: "observe".to_string(),
+            reason: String::new(),
+            leak_verdict: "clean".to_string(),
+        };
+        backend.record_egress_event(&event).await.unwrap();
+
+        let events = backend.list_egress_events(10).await.unwrap();
+        assert_eq!(events.len(), 1);
+        let got = &events[0];
+        assert_eq!(got.id, event.id);
+        assert_eq!(got.tool, "http");
+        assert_eq!(got.host, "api.example.com");
+        assert_eq!(got.path, "/v1/data");
+        assert_eq!(got.decision, EgressDecision::Allowed);
+        assert_eq!(got.mode, "observe");
+        assert_eq!(got.leak_verdict, "clean");
+    }
 
     #[tokio::test]
     #[ignore = "libsql global state conflicts in full suite; passes when run individually"]

@@ -8,8 +8,10 @@ use async_trait::async_trait;
 use futures::StreamExt;
 use reqwest::Client;
 
+use std::sync::Arc;
+
 use crate::context::JobContext;
-use crate::safety::LeakDetector;
+use crate::safety::{EgressPolicy, EgressRequest, LeakDetector};
 use crate::tools::tool::{Tool, ToolError, ToolOutput, require_str};
 
 /// Maximum response body size (5 MB).
@@ -22,10 +24,11 @@ const MAX_RESPONSE_SIZE: usize = 5 * 1024 * 1024;
 /// Tool for making HTTP requests.
 pub struct HttpTool {
     client: Client,
+    egress: Option<Arc<EgressPolicy>>,
 }
 
 impl HttpTool {
-    /// Create a new HTTP tool.
+    /// Create a new HTTP tool (leak scan only, no egress policy).
     pub fn new() -> Self {
         let client = Client::builder()
             .timeout(Duration::from_secs(30))
@@ -33,7 +36,18 @@ impl HttpTool {
             .build()
             .expect("Failed to create HTTP client");
 
-        Self { client }
+        Self {
+            client,
+            egress: None,
+        }
+    }
+
+    /// Create an HTTP tool gated by an egress policy (leak scan + host
+    /// rules + audit, per docs/design/egress-policy.md).
+    pub fn with_egress(egress: Arc<EgressPolicy>) -> Self {
+        let mut tool = Self::new();
+        tool.egress = Some(egress);
+        tool
     }
 }
 
@@ -261,11 +275,30 @@ impl Tool for HttpTool {
             None
         };
 
-        // Leak detection on outbound request (url/headers/body)
-        let detector = LeakDetector::new();
-        detector
-            .scan_http_request(parsed_url.as_str(), &headers_vec, body_bytes.as_deref())
-            .map_err(|e| ToolError::NotAuthorized(format!("{}", e)))?;
+        // Egress check on outbound request: leak scan + host rules + audit
+        // when a policy is attached; bare leak scan otherwise.
+        match &self.egress {
+            Some(policy) => {
+                let egress_req = EgressRequest {
+                    tool: "http",
+                    method: &method.to_uppercase(),
+                    url: parsed_url.as_str(),
+                    host: parsed_url.host_str().unwrap_or(""),
+                    path: parsed_url.path(),
+                    headers: &headers_vec,
+                    body: body_bytes.as_deref(),
+                };
+                policy
+                    .check_request(&egress_req)
+                    .map_err(|e| ToolError::NotAuthorized(e.to_string()))?;
+            }
+            None => {
+                let detector = LeakDetector::new();
+                detector
+                    .scan_http_request(parsed_url.as_str(), &headers_vec, body_bytes.as_deref())
+                    .map_err(|e| ToolError::NotAuthorized(format!("{}", e)))?;
+            }
+        }
 
         // Execute request
         let response = request.send().await.map_err(|e| {

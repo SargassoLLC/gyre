@@ -465,6 +465,27 @@ CREATE TABLE IF NOT EXISTS routine_runs (
 
 CREATE INDEX IF NOT EXISTS idx_routine_runs_routine ON routine_runs(routine_id);
 
+-- ==================== Egress Events ====================
+-- Audit log for the EgressPolicy layer (see docs/design/egress-policy.md).
+-- PG translation: UUID -> TEXT, TIMESTAMPTZ -> TEXT (ISO-8601).
+
+CREATE TABLE IF NOT EXISTS egress_events (
+    id TEXT PRIMARY KEY,
+    ts TEXT NOT NULL DEFAULT (datetime('now')),
+    tool TEXT NOT NULL,
+    method TEXT NOT NULL,
+    host TEXT NOT NULL,
+    path TEXT NOT NULL DEFAULT '',
+    decision TEXT NOT NULL,
+    mode TEXT NOT NULL,
+    reason TEXT NOT NULL DEFAULT '',
+    leak_verdict TEXT NOT NULL DEFAULT 'clean'
+);
+
+CREATE INDEX IF NOT EXISTS idx_egress_events_ts ON egress_events(ts DESC);
+CREATE INDEX IF NOT EXISTS idx_egress_events_host ON egress_events(host);
+CREATE INDEX IF NOT EXISTS idx_egress_events_decision ON egress_events(decision);
+
 -- ==================== Settings ====================
 
 CREATE TABLE IF NOT EXISTS settings (
