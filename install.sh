@@ -1,6 +1,6 @@
 #!/usr/bin/env sh
 # Gyre — Install Script
-# Usage: curl -fsSL https://raw.githubusercontent.com/sac916/gyre/main/install.sh | sh
+# Usage: curl -fsSL https://raw.githubusercontent.com/SargassoLLC/gyre/main/install.sh | sh
 #
 # Downloads the correct binary for your OS/arch from GitHub Releases,
 # verifies the SHA256 checksum, and installs to /usr/local/bin/gyre.
@@ -14,7 +14,7 @@ set -eu
 
 # ── Configuration ────────────────────────────────────────────────────────────
 
-REPO="sac916/gyre"
+REPO="SargassoLLC/gyre"
 INSTALL_DIR="${GYRE_INSTALL_DIR:-/usr/local/bin}"
 BINARY_NAME="gyre"
 
@@ -239,7 +239,7 @@ main() {
     printf '    gyre init          — Set up your first AI agent\n'
     printf '    gyre serve --help  — Run an agent\n'
     printf '    gyre update        — Self-update Gyre\n\n'
-    printf '  Documentation: https://github.com/sac916/gyre\n\n'
+    printf '  Documentation: https://github.com/SargassoLLC/gyre\n\n'
 }
 
 main "$@"

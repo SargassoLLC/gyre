@@ -15,8 +15,8 @@ rust-version = "1.92"
 description = "Gyre — Ambient AI OS"
 authors = ["Sargasso LLC"]
 license = "MIT OR Apache-2.0"
-homepage = "https://github.com/sac916/gyre"
-repository = "https://github.com/sac916/gyre"
+homepage = "https://github.com/SargassoLLC/gyre"
+repository = "https://github.com/SargassoLLC/gyre"
 
 [package.metadata.wix]
 upgrade-guid = "D0156E61-BA37-451E-8AB9-1A2ECCCFA48F"
