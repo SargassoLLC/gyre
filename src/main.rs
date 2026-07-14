@@ -873,7 +873,10 @@ async fn main() -> anyhow::Result<()> {
         Some(db) => EgressAuditor::spawn(Arc::clone(db)),
         None => EgressAuditor::log_only(),
     };
-    let egress_policy = Arc::new(EgressPolicy::new(&config.egress, egress_auditor));
+    // Judge mode consults the cheap model when one is configured.
+    let judge_llm = cheap_llm.clone().unwrap_or_else(|| llm.clone());
+    let egress_policy =
+        Arc::new(EgressPolicy::new(&config.egress, egress_auditor).with_judge(judge_llm));
     tools.register_sync(Arc::new(HttpTool::with_egress(egress_policy)));
     tracing::info!(
         mode = %config.egress.mode,

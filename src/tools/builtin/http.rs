@@ -290,6 +290,7 @@ impl Tool for HttpTool {
                 };
                 policy
                     .check_request(&egress_req)
+                    .await
                     .map_err(|e| ToolError::NotAuthorized(e.to_string()))?;
             }
             None => {
