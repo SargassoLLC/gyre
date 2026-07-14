@@ -9,7 +9,7 @@ exclude = [
 
 [package]
 name = "gyre"
-version = "0.2.0-beta.1"
+version = "0.3.0-beta.1"
 edition = "2024"
 rust-version = "1.92"
 description = "Gyre — Ambient AI OS"

@@ -7,6 +7,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0-beta.1] - 2026-07-14
+
+First public beta. Note: versioning restarted from the 0.2.0-beta.1 rewrite;
+the 0.3.0–0.5.0 entries below predate the restart and were never released.
+
+### Added
+
+- **EgressPolicy** — network boundary for native tools: leak scan + host
+  allow/deny rules + `observe`/`enforce`/`judge` modes for unmatched hosts
+  (judge = one LLM call, fails closed). Every decision audited to the new
+  `egress_events` table on both database backends; WASM tool allowlist
+  decisions land in the same log. Config via `[egress]` / `EGRESS_*`.
+- **full_job routines run as real scheduler jobs** with tool access
+  (previously degraded to a single tool-less LLM call), with the routine's
+  notification target threaded through job completion, `job_id` recorded on
+  the run row, and a hard `ROUTINES_FULL_JOB_TIMEOUT_SECS` deadline.
+- First-party `TrustedToolsHook` vouching for workspace-internal memory
+  tools during autonomous execution.
+- Typed routine delivery, cross-channel approvals, per-job tool allowlists,
+  additive hook tool-trust, `sessions_send`/`sessions_list`, memory
+  auto-recall, `routine_test` dry-run + LLM readiness judge (Tier 1 sprint).
+- Blueprints: brain-pipeline, research-fanout, novelty-gate.
+
+### Fixed
+
+- Fallback chain survives an explicit `/model` switch (pins primary only).
+- Jobs that exhaust self-repair attempts now transition to Failed instead
+  of staying Stuck forever.
+- Native `http` tool rejects URLs with embedded credentials (userinfo).
+
 ## [0.5.0](https://github.com/sac916/gyre/compare/v0.4.0...v0.5.0) - 2026-02-17
 
 ### Added
