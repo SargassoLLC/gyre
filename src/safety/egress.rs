@@ -259,22 +259,25 @@ impl EgressPolicy {
                 self.audit(req, EgressDecision::Allowed, "observe", "", "clean");
                 Ok(())
             }
-            // Enforce and judge land in their own phases; until then they
-            // observe loudly rather than silently pretending to block.
-            EgressMode::Enforce | EgressMode::Judge => {
-                tracing::warn!(
-                    mode = %self.mode,
-                    host = %req.host,
-                    "egress mode not yet implemented; observing (allow + audit)"
-                );
-                self.audit(
-                    req,
-                    EgressDecision::Allowed,
-                    self.mode.as_str(),
-                    "mode not yet implemented; observed",
-                    "clean",
-                );
-                Ok(())
+            EgressMode::Enforce => {
+                let reason = "matched no allow rule (enforce mode)".to_string();
+                self.audit(req, EgressDecision::Denied, "enforce", &reason, "clean");
+                Err(EgressError::Denied {
+                    host: req.host.to_string(),
+                    reason,
+                })
+            }
+            // Judge lands in its own phase; until then it fails closed
+            // (enforce-deny) rather than silently allowing — the same
+            // fallback the judge itself uses on timeout or parse failure.
+            EgressMode::Judge => {
+                let reason = "judge not yet implemented; failing closed (deny)".to_string();
+                tracing::warn!(host = %req.host, "egress judge not yet implemented; denying");
+                self.audit(req, EgressDecision::Denied, "judge", &reason, "clean");
+                Err(EgressError::Denied {
+                    host: req.host.to_string(),
+                    reason,
+                })
             }
         }
     }
@@ -448,6 +451,66 @@ mod tests {
         let req = request("api.example.com", url);
         let err = policy.check_request(&req).unwrap_err();
         assert!(matches!(err, EgressError::LeakBlocked(_)));
+    }
+
+    #[test]
+    fn test_enforce_denies_unmatched() {
+        let policy = EgressPolicy::new(
+            &config(EgressMode::Enforce, &["api.anthropic.com"], &[]),
+            EgressAuditor::log_only(),
+        );
+        let req = request("unknown.example.com", "https://unknown.example.com/");
+        let err = policy.check_request(&req).unwrap_err();
+        match err {
+            EgressError::Denied { host, reason } => {
+                assert_eq!(host, "unknown.example.com");
+                assert!(reason.contains("enforce"));
+            }
+            other => panic!("expected Denied, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_enforce_allows_allow_listed() {
+        let policy = EgressPolicy::new(
+            &config(
+                EgressMode::Enforce,
+                &["api.anthropic.com", "*.githubusercontent.com"],
+                &[],
+            ),
+            EgressAuditor::log_only(),
+        );
+        let exact = request("api.anthropic.com", "https://api.anthropic.com/v1/messages");
+        assert!(policy.check_request(&exact).is_ok());
+        let suffix = request(
+            "raw.githubusercontent.com",
+            "https://raw.githubusercontent.com/a/b",
+        );
+        assert!(policy.check_request(&suffix).is_ok());
+    }
+
+    #[test]
+    fn test_enforce_empty_allow_denies_everything_unmatched() {
+        let policy = EgressPolicy::new(
+            &config(EgressMode::Enforce, &[], &[]),
+            EgressAuditor::log_only(),
+        );
+        let req = request("example.com", "https://example.com/");
+        assert!(policy.check_request(&req).is_err());
+    }
+
+    #[test]
+    fn test_judge_unimplemented_fails_closed() {
+        let policy = EgressPolicy::new(
+            &config(EgressMode::Judge, &["api.anthropic.com"], &[]),
+            EgressAuditor::log_only(),
+        );
+        // Allow-listed host still passes without consulting the judge
+        let listed = request("api.anthropic.com", "https://api.anthropic.com/");
+        assert!(policy.check_request(&listed).is_ok());
+        // Unmatched host is denied until the judge lands
+        let unmatched = request("unknown.example.com", "https://unknown.example.com/");
+        assert!(policy.check_request(&unmatched).is_err());
     }
 
     #[test]
