@@ -551,11 +551,22 @@ impl LlmConfig {
                 tracing::info!("Using Claude.ai subscription credentials (via Claude Code OAuth)");
                 SecretString::from(oauth_token)
             } else {
+                // Distinguish "expired, go re-auth" from "never configured".
+                let hint = match crate::llm::claude_oauth::current_status() {
+                    crate::llm::claude_oauth::CredentialStatus::Expired => {
+                        "Your Claude.ai subscription session has expired. Run `gyre auth login` \
+                         to refresh it (or run `claude` to re-sign-in), then start Gyre again. \
+                         Alternatively set ANTHROPIC_API_KEY to a console.anthropic.com API key."
+                            .to_string()
+                    }
+                    _ => "No LLM credentials found. Run `gyre auth login`, sign in to Claude Code \
+                         (`claude` CLI) for your Claude.ai subscription, or set ANTHROPIC_API_KEY \
+                         to a console.anthropic.com API key."
+                        .to_string(),
+                };
                 return Err(ConfigError::MissingRequired {
                     key: "ANTHROPIC_API_KEY".to_string(),
-                    hint: "Set ANTHROPIC_API_KEY or sign in to Claude Code (`claude` CLI) \
-                           to use your Claude.ai subscription"
-                        .to_string(),
+                    hint,
                 });
             };
             let model = optional_env("ANTHROPIC_MODEL")?
@@ -1527,48 +1538,22 @@ impl ClaudeCodeConfig {
         }
     }
 
-    /// Extract the OAuth access token from the host's credential store.
+    /// Extract a *currently-valid* OAuth access token from the host's
+    /// credential store (Claude Code: macOS Keychain or
+    /// `~/.claude/.credentials.json`).
     ///
-    /// On macOS: reads from Keychain (`Claude Code-credentials` service).
-    /// On Linux: reads from `~/.claude/.credentials.json`.
-    ///
-    /// Returns the access token if found. The token typically expires in
-    /// 8-12 hours, which is sufficient for any single container job.
+    /// Returns `None` when there is no token OR the token is expired — an
+    /// expired token must never reach the provider (it produces a raw 401).
+    /// Refresh happens out of band at startup / `gyre auth`
+    /// (see [`crate::llm::claude_oauth::ensure_fresh_token`]); this sync
+    /// accessor only ever surfaces a live token.
     pub fn extract_oauth_token() -> Option<String> {
-        // macOS: extract from Keychain
-        if cfg!(target_os = "macos") {
-            match std::process::Command::new("security")
-                .args([
-                    "find-generic-password",
-                    "-s",
-                    "Claude Code-credentials",
-                    "-w",
-                ])
-                .output()
-            {
-                Ok(output) if output.status.success() => {
-                    if let Ok(json) = String::from_utf8(output.stdout) {
-                        return parse_oauth_access_token(json.trim());
-                    }
-                }
-                Ok(_) => {
-                    tracing::debug!("No Claude Code credentials in macOS Keychain");
-                }
-                Err(e) => {
-                    tracing::debug!("Failed to query macOS Keychain: {e}");
-                }
-            }
+        let creds = crate::llm::claude_oauth::load_credentials()?;
+        if creds.is_expired(chrono::Utc::now()) {
+            tracing::debug!("Claude Code OAuth token present but expired; not using it");
+            return None;
         }
-
-        // Linux / fallback: read from ~/.claude/.credentials.json
-        if let Some(home) = dirs::home_dir() {
-            let creds_path = home.join(".claude").join(".credentials.json");
-            if let Ok(json) = std::fs::read_to_string(&creds_path) {
-                return parse_oauth_access_token(&json);
-            }
-        }
-
-        None
+        Some(creds.access_token)
     }
 
     fn resolve() -> Result<Self, ConfigError> {
@@ -1610,16 +1595,6 @@ fn parse_allowed_tools(s: &str) -> Vec<String> {
         .map(|t| t.trim().to_string())
         .filter(|t| !t.is_empty())
         .collect()
-}
-
-/// Parse the OAuth access token from a Claude Code credentials JSON blob.
-///
-/// Expected shape: `{"claudeAiOauth": {"accessToken": "sk-ant-oat01-..."}}`
-fn parse_oauth_access_token(json: &str) -> Option<String> {
-    let creds: serde_json::Value = serde_json::from_str(json).ok()?;
-    creds["claudeAiOauth"]["accessToken"]
-        .as_str()
-        .map(String::from)
 }
 
 /// Skills system configuration.

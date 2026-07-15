@@ -17,9 +17,9 @@ use gyre::{
         web::log_layer::{LogBroadcaster, WebLogLayer},
     },
     cli::{
-        Cli, Command, run_axiom_command, run_egress_command, run_license_command, run_mcp_command,
-        run_pairing_command, run_service_command, run_status_command, run_template_command,
-        run_tool_command,
+        Cli, Command, run_auth_command, run_axiom_command, run_egress_command, run_license_command,
+        run_mcp_command, run_pairing_command, run_service_command, run_status_command,
+        run_template_command, run_tool_command,
     },
     config::Config,
     context::ContextManager,
@@ -256,6 +256,14 @@ async fn main() -> anyhow::Result<()> {
                 .map_err(|e| anyhow::anyhow!("{}", e))?;
 
             return run_egress_command(egress_cmd.clone(), db).await;
+        }
+        Some(Command::Auth(auth_cmd)) => {
+            tracing_subscriber::fmt()
+                .with_env_filter(
+                    EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("warn")),
+                )
+                .init();
+            return run_auth_command(auth_cmd.clone()).await;
         }
         Some(Command::Worker {
             job_id,
@@ -501,6 +509,21 @@ async fn main() -> anyhow::Result<()> {
     // Standard ./.env first (higher priority), then ~/.gyre/.env.
     let _ = dotenvy::dotenv();
     gyre::bootstrap::load_gyre_env();
+
+    // Keep the Claude.ai subscription token fresh before config resolution
+    // reads it. No-op when an explicit ANTHROPIC_API_KEY is set or Claude
+    // Code isn't signed in; refreshes in place only when the token is
+    // expiring. Failure here is non-fatal — the clear "run `gyre auth login`"
+    // error surfaces downstream if the token is truly dead.
+    if std::env::var("ANTHROPIC_API_KEY").is_err() {
+        let (status, _token) = gyre::llm::claude_oauth::ensure_fresh_token().await;
+        if matches!(status, gyre::llm::claude_oauth::CredentialStatus::Expired) {
+            tracing::warn!(
+                "Claude.ai subscription token is expired and could not be refreshed; \
+                 run `gyre auth login` or `claude` to re-sign-in"
+            );
+        }
+    }
 
     // Enhanced first-run detection — launch new setup wizard
     #[cfg(any(feature = "postgres", feature = "libsql"))]
