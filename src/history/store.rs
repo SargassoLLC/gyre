@@ -474,6 +474,14 @@ pub struct SandboxJobRecord {
     /// Serialized JSON of `Vec<CredentialGrant>` for restart support.
     /// Stored in the `description` column of `agent_jobs` (unused for sandbox jobs).
     pub credential_grants_json: String,
+    /// Per-job tool allowlist for Claude Code, persisted so restart reproduces
+    /// the original security envelope.
+    ///
+    /// - `None`  — job was not tool-restricted (uses configured default)
+    /// - `Some(",")` — deny-all sentinel: empty effective list.  Must NOT be
+    ///   treated as "unrestricted" on round-trip.
+    /// - `Some("a,b,c")` — comma-separated allowed tool patterns
+    pub allowed_tools: Option<String>,
 }
 
 /// Summary of sandbox job counts grouped by status.
@@ -496,8 +504,9 @@ impl Store {
             r#"
             INSERT INTO agent_jobs (
                 id, title, description, status, source, user_id, project_dir,
-                success, failure_reason, created_at, started_at, completed_at
-            ) VALUES ($1, $2, $3, $4, 'sandbox', $5, $6, $7, $8, $9, $10, $11)
+                success, failure_reason, created_at, started_at, completed_at,
+                allowed_tools
+            ) VALUES ($1, $2, $3, $4, 'sandbox', $5, $6, $7, $8, $9, $10, $11, $12)
             ON CONFLICT (id) DO UPDATE SET
                 status = EXCLUDED.status,
                 success = EXCLUDED.success,
@@ -517,6 +526,7 @@ impl Store {
                 &job.created_at,
                 &job.started_at,
                 &job.completed_at,
+                &job.allowed_tools,
             ],
         )
         .await?;
@@ -533,7 +543,8 @@ impl Store {
             .query_opt(
                 r#"
                 SELECT id, title, description, status, user_id, project_dir,
-                       success, failure_reason, created_at, started_at, completed_at
+                       success, failure_reason, created_at, started_at, completed_at,
+                       allowed_tools
                 FROM agent_jobs WHERE id = $1 AND source = 'sandbox'
                 "#,
                 &[&id],
@@ -554,6 +565,7 @@ impl Store {
             started_at: r.get("started_at"),
             completed_at: r.get("completed_at"),
             credential_grants_json: r.get::<_, String>("description"),
+            allowed_tools: r.get("allowed_tools"),
         }))
     }
 
@@ -564,7 +576,8 @@ impl Store {
             .query(
                 r#"
                 SELECT id, title, description, status, user_id, project_dir,
-                       success, failure_reason, created_at, started_at, completed_at
+                       success, failure_reason, created_at, started_at, completed_at,
+                       allowed_tools
                 FROM agent_jobs WHERE source = 'sandbox'
                 ORDER BY created_at DESC
                 "#,
@@ -588,6 +601,7 @@ impl Store {
                 started_at: r.get("started_at"),
                 completed_at: r.get("completed_at"),
                 credential_grants_json: r.get::<_, String>("description"),
+                allowed_tools: r.get("allowed_tools"),
             })
             .collect())
     }
@@ -602,7 +616,8 @@ impl Store {
             .query(
                 r#"
                 SELECT id, title, description, status, user_id, project_dir,
-                       success, failure_reason, created_at, started_at, completed_at
+                       success, failure_reason, created_at, started_at, completed_at,
+                       allowed_tools
                 FROM agent_jobs WHERE source = 'sandbox' AND user_id = $1
                 ORDER BY created_at DESC
                 "#,
@@ -626,6 +641,7 @@ impl Store {
                 started_at: r.get("started_at"),
                 completed_at: r.get("completed_at"),
                 credential_grants_json: r.get::<_, String>("description"),
+                allowed_tools: r.get("allowed_tools"),
             })
             .collect())
     }
@@ -1882,5 +1898,108 @@ impl Store {
             .await?;
         let count: i64 = row.get("cnt");
         Ok(count > 0)
+    }
+}
+
+// ==================== Unit tests ====================
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── SandboxJobRecord::allowed_tools field ─────────────────────────────────
+
+    /// Encoding convention exercised here must match the decode in
+    /// `jobs_restart_handler` (channels/web/server.rs).
+    fn encode_allowed_tools(tools: Option<&[String]>) -> Option<String> {
+        match tools {
+            None => None,
+            Some(v) if v.is_empty() => Some(",".to_string()),
+            Some(v) => Some(v.join(",")),
+        }
+    }
+
+    fn decode_allowed_tools(stored: Option<&str>) -> Option<Vec<String>> {
+        match stored {
+            None => None,
+            Some(",") => Some(vec![]),
+            Some(s) => Some(
+                s.split(',')
+                    .map(|t| t.trim().to_string())
+                    .filter(|t| !t.is_empty())
+                    .collect(),
+            ),
+        }
+    }
+
+    #[test]
+    fn allowed_tools_none_roundtrip() {
+        let encoded = encode_allowed_tools(None);
+        assert_eq!(encoded, None);
+        let decoded = decode_allowed_tools(encoded.as_deref());
+        assert_eq!(
+            decoded, None,
+            "None must decode back to None (unrestricted)"
+        );
+    }
+
+    #[test]
+    fn allowed_tools_deny_all_roundtrip() {
+        // Empty Vec = deny-all: must NOT round-trip as None (unrestricted).
+        let tools: Vec<String> = vec![];
+        let encoded = encode_allowed_tools(Some(&tools));
+        assert_eq!(encoded.as_deref(), Some(","), "deny-all must encode as ','");
+        let decoded = decode_allowed_tools(encoded.as_deref());
+        assert_eq!(
+            decoded,
+            Some(vec![]),
+            "deny-all sentinel must decode to empty vec, not None"
+        );
+    }
+
+    #[test]
+    fn allowed_tools_list_roundtrip() {
+        let tools: Vec<String> = vec!["Bash".into(), "Read".into(), "Edit".into()];
+        let encoded = encode_allowed_tools(Some(&tools));
+        assert_eq!(encoded.as_deref(), Some("Bash,Read,Edit"));
+        let decoded = decode_allowed_tools(encoded.as_deref());
+        assert_eq!(decoded, Some(tools));
+    }
+
+    #[test]
+    fn allowed_tools_deny_all_is_not_none() {
+        // Critical invariant: deny-all must never be treated as unrestricted.
+        let deny_all = encode_allowed_tools(Some(&[]));
+        let unrestricted = encode_allowed_tools(None);
+        assert_ne!(
+            deny_all, unrestricted,
+            "deny-all ({deny_all:?}) must differ from unrestricted ({unrestricted:?})"
+        );
+    }
+
+    #[test]
+    fn sandbox_job_record_allowed_tools_field_present() {
+        // Verify the struct has the field and default constructs correctly.
+        let record = SandboxJobRecord {
+            id: Uuid::new_v4(),
+            task: "test".to_string(),
+            status: "creating".to_string(),
+            user_id: "user1".to_string(),
+            project_dir: "/tmp".to_string(),
+            success: None,
+            failure_reason: None,
+            created_at: chrono::Utc::now(),
+            started_at: None,
+            completed_at: None,
+            credential_grants_json: "[]".to_string(),
+            allowed_tools: None,
+        };
+        assert_eq!(record.allowed_tools, None);
+
+        let restricted = SandboxJobRecord {
+            allowed_tools: Some(",".to_string()),
+            ..record
+        };
+        assert_eq!(restricted.allowed_tools.as_deref(), Some(","));
     }
 }

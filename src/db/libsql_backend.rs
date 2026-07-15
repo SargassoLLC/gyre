@@ -294,6 +294,23 @@ impl Database for LibSqlBackend {
         conn.execute_batch(libsql_migrations::SCHEMA)
             .await
             .map_err(|e| DatabaseError::Migration(format!("libSQL migration failed: {}", e)))?;
+
+        // Apply columns added after the initial schema.  Each is run individually
+        // so that "duplicate column" errors on new databases (which already have
+        // the column from CREATE TABLE) are swallowed rather than aborting the
+        // whole migration.
+        for (table, col_def) in libsql_migrations::INCREMENTAL_COLUMNS {
+            let sql = format!("ALTER TABLE {table} ADD COLUMN {col_def}");
+            if let Err(e) = conn.execute(&sql, ()).await {
+                let msg = e.to_string();
+                // SQLite error for a column that already exists.
+                if !msg.contains("duplicate column name") {
+                    return Err(DatabaseError::Migration(format!(
+                        "Failed to add column `{col_def}` to `{table}`: {e}"
+                    )));
+                }
+            }
+        }
         Ok(())
     }
 
@@ -965,8 +982,9 @@ impl Database for LibSqlBackend {
             r#"
                 INSERT INTO agent_jobs (
                     id, title, description, status, source, user_id, project_dir,
-                    success, failure_reason, created_at, started_at, completed_at
-                ) VALUES (?1, ?2, ?3, ?4, 'sandbox', ?5, ?6, ?7, ?8, ?9, ?10, ?11)
+                    success, failure_reason, created_at, started_at, completed_at,
+                    allowed_tools
+                ) VALUES (?1, ?2, ?3, ?4, 'sandbox', ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
                 ON CONFLICT (id) DO UPDATE SET
                     status = excluded.status,
                     success = excluded.success,
@@ -986,6 +1004,7 @@ impl Database for LibSqlBackend {
                 fmt_ts(&job.created_at),
                 fmt_opt_ts(&job.started_at),
                 fmt_opt_ts(&job.completed_at),
+                opt_text(job.allowed_tools.as_deref()),
             ],
         )
         .await
@@ -999,7 +1018,8 @@ impl Database for LibSqlBackend {
             .query(
                 r#"
                 SELECT id, title, description, status, user_id, project_dir,
-                       success, failure_reason, created_at, started_at, completed_at
+                       success, failure_reason, created_at, started_at, completed_at,
+                       allowed_tools
                 FROM agent_jobs WHERE id = ?1 AND source = 'sandbox'
                 "#,
                 params![id.to_string()],
@@ -1024,6 +1044,7 @@ impl Database for LibSqlBackend {
                 created_at: get_ts(&row, 8),
                 started_at: get_opt_ts(&row, 9),
                 completed_at: get_opt_ts(&row, 10),
+                allowed_tools: get_opt_text(&row, 11),
             })),
             None => Ok(None),
         }
@@ -1035,7 +1056,8 @@ impl Database for LibSqlBackend {
             .query(
                 r#"
                 SELECT id, title, description, status, user_id, project_dir,
-                       success, failure_reason, created_at, started_at, completed_at
+                       success, failure_reason, created_at, started_at, completed_at,
+                       allowed_tools
                 FROM agent_jobs WHERE source = 'sandbox'
                 ORDER BY created_at DESC
                 "#,
@@ -1062,6 +1084,7 @@ impl Database for LibSqlBackend {
                 created_at: get_ts(&row, 8),
                 started_at: get_opt_ts(&row, 9),
                 completed_at: get_opt_ts(&row, 10),
+                allowed_tools: get_opt_text(&row, 11),
             });
         }
         Ok(jobs)
@@ -1163,7 +1186,8 @@ impl Database for LibSqlBackend {
             .query(
                 r#"
                 SELECT id, title, description, status, user_id, project_dir,
-                       success, failure_reason, created_at, started_at, completed_at
+                       success, failure_reason, created_at, started_at, completed_at,
+                       allowed_tools
                 FROM agent_jobs WHERE source = 'sandbox' AND user_id = ?1
                 ORDER BY created_at DESC
                 "#,
@@ -1190,6 +1214,7 @@ impl Database for LibSqlBackend {
                 created_at: get_ts(&row, 8),
                 started_at: get_opt_ts(&row, 9),
                 completed_at: get_opt_ts(&row, 10),
+                allowed_tools: get_opt_text(&row, 11),
             });
         }
         Ok(jobs)
@@ -2901,5 +2926,110 @@ mod tests {
         let row = rows.next().await.unwrap().unwrap();
         let count: i64 = row.get(0).unwrap();
         assert_eq!(count, 20);
+    }
+
+    // ── allowed_tools round-trip tests ───────────────────────────────────────
+
+    fn make_sandbox_job(
+        id: uuid::Uuid,
+        allowed_tools: Option<String>,
+    ) -> crate::history::SandboxJobRecord {
+        use chrono::Utc;
+        crate::history::SandboxJobRecord {
+            id,
+            task: "test task".to_string(),
+            status: "creating".to_string(),
+            user_id: "test_user".to_string(),
+            project_dir: "/tmp/proj".to_string(),
+            success: None,
+            failure_reason: None,
+            created_at: Utc::now(),
+            started_at: None,
+            completed_at: None,
+            credential_grants_json: "[]".to_string(),
+            allowed_tools,
+        }
+    }
+
+    #[tokio::test]
+    #[ignore = "libsql global state conflicts in full suite; passes when run individually"]
+    async fn test_sandbox_job_allowed_tools_none_roundtrip() {
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("test_allowed_tools_none.db");
+        let backend = LibSqlBackend::new_local(&db_path).await.unwrap();
+        backend.run_migrations().await.unwrap();
+
+        let id = uuid::Uuid::new_v4();
+        let job = make_sandbox_job(id, None);
+        backend.save_sandbox_job(&job).await.unwrap();
+
+        let loaded = backend.get_sandbox_job(id).await.unwrap().unwrap();
+        // None means "not tool-restricted" — must round-trip as None, never as Some.
+        assert_eq!(loaded.allowed_tools, None);
+    }
+
+    #[tokio::test]
+    #[ignore = "libsql global state conflicts in full suite; passes when run individually"]
+    async fn test_sandbox_job_allowed_tools_deny_all_roundtrip() {
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("test_allowed_tools_deny.db");
+        let backend = LibSqlBackend::new_local(&db_path).await.unwrap();
+        backend.run_migrations().await.unwrap();
+
+        let id = uuid::Uuid::new_v4();
+        // "," is the deny-all sentinel: empty effective list, not the same as NULL.
+        let job = make_sandbox_job(id, Some(",".to_string()));
+        backend.save_sandbox_job(&job).await.unwrap();
+
+        let loaded = backend.get_sandbox_job(id).await.unwrap().unwrap();
+        assert_eq!(
+            loaded.allowed_tools.as_deref(),
+            Some(","),
+            "deny-all sentinel must round-trip as Some(\",\"), not as None"
+        );
+    }
+
+    #[tokio::test]
+    #[ignore = "libsql global state conflicts in full suite; passes when run individually"]
+    async fn test_sandbox_job_allowed_tools_list_roundtrip() {
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("test_allowed_tools_list.db");
+        let backend = LibSqlBackend::new_local(&db_path).await.unwrap();
+        backend.run_migrations().await.unwrap();
+
+        let id = uuid::Uuid::new_v4();
+        let job = make_sandbox_job(id, Some("Bash,Read,Edit".to_string()));
+        backend.save_sandbox_job(&job).await.unwrap();
+
+        let loaded = backend.get_sandbox_job(id).await.unwrap().unwrap();
+        assert_eq!(loaded.allowed_tools.as_deref(), Some("Bash,Read,Edit"));
+    }
+
+    #[tokio::test]
+    #[ignore = "libsql global state conflicts in full suite; passes when run individually"]
+    async fn test_sandbox_job_allowed_tools_incremental_column_migration() {
+        // Simulate an "existing database" that was created without the
+        // allowed_tools column by running SCHEMA without the column, then
+        // exercising the INCREMENTAL_COLUMNS path.
+        //
+        // The easiest approach: create a fresh DB (which gets the column from
+        // the current SCHEMA), verify the column exists, then confirm that a
+        // second call to run_migrations() is idempotent (the ALTER TABLE
+        // "duplicate column" error is swallowed).
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("test_incremental.db");
+        let backend = LibSqlBackend::new_local(&db_path).await.unwrap();
+        backend.run_migrations().await.unwrap();
+        // Re-running migrations must not error out.
+        backend
+            .run_migrations()
+            .await
+            .expect("second run_migrations call must be idempotent");
+
+        let id = uuid::Uuid::new_v4();
+        let job = make_sandbox_job(id, Some(",".to_string()));
+        backend.save_sandbox_job(&job).await.unwrap();
+        let loaded = backend.get_sandbox_job(id).await.unwrap().unwrap();
+        assert_eq!(loaded.allowed_tools.as_deref(), Some(","));
     }
 }

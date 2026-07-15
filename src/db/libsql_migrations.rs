@@ -81,7 +81,8 @@ CREATE TABLE IF NOT EXISTS agent_jobs (
     repair_attempts INTEGER NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
     started_at TEXT,
-    completed_at TEXT
+    completed_at TEXT,
+    allowed_tools TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_agent_jobs_status ON agent_jobs(status);
@@ -568,3 +569,17 @@ INSERT OR IGNORE INTO leak_detection_patterns (id, name, pattern, severity, acti
     ('550e8400-e29b-41d4-a716-446655440012', 'high_entropy_hex', '(?<![a-fA-F0-9])[a-fA-F0-9]{64}(?![a-fA-F0-9])', 'medium', 'warn', 1, datetime('now'));
 
 "#;
+
+/// Columns added after the initial schema that must be applied to existing
+/// databases via `ALTER TABLE … ADD COLUMN`.
+///
+/// New databases already receive these columns from the `CREATE TABLE IF NOT
+/// EXISTS` DDL in [`SCHEMA`] above; these statements are only needed for
+/// databases created before the column was introduced.
+///
+/// SQLite does not support `ADD COLUMN IF NOT EXISTS`, so each entry is
+/// executed individually and any "duplicate column" error is swallowed.
+pub const INCREMENTAL_COLUMNS: &[(&str, &str)] = &[
+    // V10: per-job tool allowlist on sandbox jobs (see migrations/V10__sandbox_allowed_tools.sql).
+    ("agent_jobs", "allowed_tools TEXT"),
+];

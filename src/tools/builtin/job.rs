@@ -301,6 +301,19 @@ impl CreateJobTool {
             }
         };
 
+        // Encode the per-job tool allowlist for persistence.
+        //
+        // Convention (mirrors the decode logic in jobs_restart_handler):
+        //   None        — no per-job restriction; stored as SQL NULL
+        //   Some([])    — deny-all; stored as "," so it round-trips as Some(",")
+        //                 and is never confused with NULL (unrestricted)
+        //   Some(tools) — stored as comma-separated patterns
+        let allowed_tools_serialized: Option<String> = match &allowed_tools {
+            None => None,
+            Some(v) if v.is_empty() => Some(",".to_string()),
+            Some(v) => Some(v.join(",")),
+        };
+
         // Persist the job to DB before creating the container.
         self.persist_job(SandboxJobRecord {
             id: job_id,
@@ -314,6 +327,7 @@ impl CreateJobTool {
             started_at: None,
             completed_at: None,
             credential_grants_json,
+            allowed_tools: allowed_tools_serialized,
         });
 
         // Persist the job mode to DB
@@ -759,13 +773,15 @@ impl Tool for CreateJobTool {
 
             // Optional restrict-only tool allowlist for this job (narrows
             // the configured list via intersection in the job manager).
-            let allowed_tools = params.get("allowed_tools").and_then(|v| v.as_array()).map(
-                |arr| -> Vec<String> {
-                    arr.iter()
-                        .filter_map(|v| v.as_str().map(String::from))
-                        .collect()
-                },
-            );
+            let allowed_tools =
+                params
+                    .get("allowed_tools")
+                    .and_then(|v| v.as_array())
+                    .map(|arr| -> Vec<String> {
+                        arr.iter()
+                            .filter_map(|v| v.as_str().map(String::from))
+                            .collect()
+                    });
 
             // Combine title and description into the task prompt for the sub-agent.
             let task = format!("{}\n\n{}", title, description);

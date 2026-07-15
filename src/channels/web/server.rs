@@ -1403,6 +1403,9 @@ async fn jobs_restart_handler(
         started_at: None,
         completed_at: None,
         credential_grants_json: old_job.credential_grants_json.clone(),
+        // Carry the tool restriction forward so the restarted job has the
+        // same envelope as the original.
+        allowed_tools: old_job.allowed_tools.clone(),
     };
     store
         .save_sandbox_job(&record)
@@ -1429,8 +1432,25 @@ async fn jobs_restart_handler(
         });
 
     let project_dir = std::path::PathBuf::from(&old_job.project_dir);
-    // Per-job tool restrictions are not persisted in SandboxJobRecord, so
-    // a restarted job falls back to the configured default allowlist.
+    // Restore the original job's per-job tool allowlist so the restarted
+    // container inherits the same security envelope.
+    //
+    // Storage convention (mirrors ContainerJobManager::create_job_inner):
+    //   None        — was not tool-restricted; pass None to use the
+    //                 configured default allowlist unchanged
+    //   Some(",")   — deny-all sentinel; pass Some(vec![]) to reproduce
+    //                 the empty effective list (must NOT widen to unrestricted)
+    //   Some("a,b") — comma-separated patterns; reconstruct the Vec
+    let original_allowed_tools: Option<Vec<String>> = match old_job.allowed_tools.as_deref() {
+        None => None,
+        Some(",") => Some(vec![]),
+        Some(s) => Some(
+            s.split(',')
+                .map(|t| t.trim().to_string())
+                .filter(|t| !t.is_empty())
+                .collect(),
+        ),
+    };
     let _token = jm
         .create_job(
             new_job_id,
@@ -1438,7 +1458,7 @@ async fn jobs_restart_handler(
             Some(project_dir),
             mode,
             credential_grants,
-            None,
+            original_allowed_tools,
         )
         .await
         .map_err(|e| {
