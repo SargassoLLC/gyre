@@ -480,8 +480,9 @@ mod tests {
         assert_eq!(manager.config.image, "custom:latest");
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn test_direct_execution() {
+        let _guard = crate::test_helpers::PROC_MUTEX.lock().unwrap();
         let manager = SandboxManager::new(SandboxConfig {
             enabled: true,
             policy: SandboxPolicy::FullAccess,
@@ -498,8 +499,9 @@ mod tests {
         assert!(output.stdout.contains("hello"));
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn test_direct_execution_truncates_large_output() {
+        let _guard = crate::test_helpers::PROC_MUTEX.lock().unwrap();
         let manager = SandboxManager::new(SandboxConfig {
             enabled: true,
             policy: SandboxPolicy::FullAccess,

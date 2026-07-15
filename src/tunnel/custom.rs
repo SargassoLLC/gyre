@@ -154,6 +154,7 @@ mod tests {
 
     #[tokio::test]
     async fn empty_command_returns_error() {
+        // Does not spawn a process that survives past the call; no lock needed.
         let tunnel = CustomTunnel::new("   ".into(), None, None);
         let result = tunnel.start("127.0.0.1", 8080).await;
         assert!(result.is_err());
@@ -165,16 +166,18 @@ mod tests {
         );
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn start_without_pattern_returns_local() {
+        let _guard = crate::test_helpers::PROC_MUTEX.lock().unwrap();
         let tunnel = CustomTunnel::new("sleep 1".into(), None, None);
         let url = tunnel.start("127.0.0.1", 4455).await.unwrap();
         assert_eq!(url, "http://127.0.0.1:4455");
         tunnel.stop().await.unwrap();
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn start_with_pattern_extracts_url() {
+        let _guard = crate::test_helpers::PROC_MUTEX.lock().unwrap();
         let tunnel = CustomTunnel::new(
             "echo https://public.example".into(),
             None,
@@ -185,8 +188,9 @@ mod tests {
         tunnel.stop().await.unwrap();
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn pattern_filters_non_matching_urls() {
+        let _guard = crate::test_helpers::PROC_MUTEX.lock().unwrap();
         // The command outputs two lines: first a non-matching URL, then a matching one.
         // The pattern filter should skip the first and grab the second.
         // No shell quoting needed; Command passes args directly to the binary.
@@ -200,8 +204,9 @@ mod tests {
         tunnel.stop().await.unwrap();
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn replaces_host_and_port_placeholders() {
+        let _guard = crate::test_helpers::PROC_MUTEX.lock().unwrap();
         let tunnel = CustomTunnel::new(
             "echo http://{host}:{port}".into(),
             None,
@@ -212,8 +217,9 @@ mod tests {
         tunnel.stop().await.unwrap();
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn health_with_unreachable_url_is_false() {
+        let _guard = crate::test_helpers::PROC_MUTEX.lock().unwrap();
         let tunnel = CustomTunnel::new(
             "sleep 1".into(),
             Some("http://127.0.0.1:9/healthz".into()),

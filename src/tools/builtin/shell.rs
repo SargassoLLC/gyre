@@ -737,8 +737,9 @@ fn truncate_for_error(s: &str) -> String {
 mod tests {
     use super::*;
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn test_echo_command() {
+        let _guard = crate::test_helpers::PROC_MUTEX.lock().unwrap();
         let tool = ShellTool::new();
         let ctx = JobContext::default();
 
@@ -763,8 +764,11 @@ mod tests {
         assert!(tool.is_blocked("cargo build").is_none());
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn test_command_timeout() {
+        // `sleep 10` is killed after 100 ms; current_thread runtime avoids
+        // sharing tokio's global SIGCHLD handler across threads.
+        let _guard = crate::test_helpers::PROC_MUTEX.lock().unwrap();
         let tool = ShellTool::new().with_timeout(Duration::from_millis(100));
         let ctx = JobContext::default();
 
@@ -1062,6 +1066,7 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread")]
     async fn test_env_scrubbing_hides_secrets() {
+        let _guard = crate::test_helpers::PROC_MUTEX.lock().unwrap();
         // Set a fake secret in the current process environment.
         // SAFETY: test-only, single-threaded tokio runtime, no concurrent env access.
         let secret_var = "GYRE_TEST_SECRET_KEY";
@@ -1099,8 +1104,9 @@ mod tests {
         unsafe { std::env::remove_var(secret_var) };
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn test_env_scrubbing_forwards_safe_vars() {
+        let _guard = crate::test_helpers::PROC_MUTEX.lock().unwrap();
         let tool = ShellTool::new();
         let ctx = JobContext::default();
 
@@ -1125,6 +1131,7 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread")]
     async fn test_env_scrubbing_common_secret_patterns() {
+        let _guard = crate::test_helpers::PROC_MUTEX.lock().unwrap();
         // Simulate common secret env vars that agents/tools might set
         let secrets = [
             ("OPENAI_API_KEY", "sk-test-fake-key-123"),
@@ -1164,7 +1171,7 @@ mod tests {
 
     // ── Integration: injection blocked at execute_command level ─────────
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn test_injection_blocked_at_execution() {
         let tool = ShellTool::new();
         let ctx = JobContext::default();
@@ -1184,7 +1191,7 @@ mod tests {
         );
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn test_netcat_blocked_at_execution() {
         let tool = ShellTool::new();
         let ctx = JobContext::default();

@@ -300,15 +300,20 @@ mod tests {
         assert_eq!(t.name(), "custom");
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn kill_shared_no_process_is_ok() {
+        // No child spawned; no risk, but consistent flavor with sibling tests.
         let proc = new_shared_process();
         assert!(kill_shared(&proc).await.is_ok());
         assert!(proc.lock().await.is_none());
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn kill_shared_terminates_child() {
+        // current_thread ensures the tokio runtime's SIGCHLD handler is not
+        // shared with other threads that may concurrently kill/wait children.
+        let _guard = crate::test_helpers::PROC_MUTEX.lock().unwrap();
+
         let proc = new_shared_process();
 
         let child = Command::new("sleep")

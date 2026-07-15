@@ -505,6 +505,7 @@ mod tests {
 
     #[test]
     fn check_binary_finds_sh() {
+        let _guard = crate::test_helpers::PROC_MUTEX.lock().unwrap();
         match check_binary("sh", &["-c", "echo ok"]) {
             CheckResult::Pass(_) => {}
             CheckResult::Fail(s) => panic!("expected Pass for sh, got Fail({s})"),

@@ -110,6 +110,7 @@ mod tests {
 
     #[test]
     fn test_missing_binary_fails() {
+        let _guard = crate::test_helpers::PROC_MUTEX.lock().unwrap();
         let req = GatingRequirements {
             bins: vec!["__gyre_nonexistent_binary_xyz__".to_string()],
             ..Default::default()
@@ -155,6 +156,7 @@ mod tests {
 
     #[test]
     fn test_multiple_mixed_requirements() {
+        let _guard = crate::test_helpers::PROC_MUTEX.lock().unwrap();
         let req = GatingRequirements {
             bins: vec!["__no_such_bin__".to_string()],
             env: vec!["__NO_SUCH_VAR__".to_string()],

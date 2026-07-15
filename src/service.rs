@@ -302,6 +302,7 @@ mod tests {
 
     #[test]
     fn run_capture_reads_stdout() {
+        let _guard = crate::test_helpers::PROC_MUTEX.lock().unwrap();
         let out = run_capture(Command::new("sh").args(["-c", "echo hello"]))
             .expect("stdout capture should succeed");
         assert_eq!(out.trim(), "hello");
@@ -309,6 +310,7 @@ mod tests {
 
     #[test]
     fn run_capture_falls_back_to_stderr() {
+        let _guard = crate::test_helpers::PROC_MUTEX.lock().unwrap();
         let out = run_capture(Command::new("sh").args(["-c", "echo warn 1>&2"]))
             .expect("stderr capture should succeed");
         assert_eq!(out.trim(), "warn");
@@ -316,6 +318,7 @@ mod tests {
 
     #[test]
     fn run_checked_errors_on_non_zero_exit() {
+        let _guard = crate::test_helpers::PROC_MUTEX.lock().unwrap();
         let err = run_checked(Command::new("sh").args(["-c", "exit 17"]))
             .expect_err("non-zero exit should error");
         assert!(err.to_string().contains("command failed"));
@@ -323,6 +326,7 @@ mod tests {
 
     #[test]
     fn run_checked_succeeds_on_zero_exit() {
+        let _guard = crate::test_helpers::PROC_MUTEX.lock().unwrap();
         assert!(run_checked(Command::new("sh").args(["-c", "exit 0"])).is_ok());
     }
 

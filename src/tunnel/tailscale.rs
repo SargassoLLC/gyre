@@ -130,11 +130,16 @@ mod tests {
 
     #[tokio::test]
     async fn health_false_before_start() {
+        // health_check only inspects the in-memory state; no process spawned.
         assert!(!TailscaleTunnel::new(false, None).health_check().await);
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn stop_without_start_is_ok() {
+        // stop() runs `tailscale serve reset` via tokio Command even when
+        // tailscale is not installed.  current_thread runtime avoids sharing
+        // tokio's global SIGCHLD handler across threads.
+        let _guard = crate::test_helpers::PROC_MUTEX.lock().unwrap();
         assert!(TailscaleTunnel::new(false, None).stop().await.is_ok());
     }
 }

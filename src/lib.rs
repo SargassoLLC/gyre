@@ -76,6 +76,29 @@ pub mod workspace;
 pub use config::Config;
 pub use error::{Error, Result};
 
+/// Process-global mutex for tests that spawn child processes.
+///
+/// tokio installs a **process-wide** SIGCHLD handler that manages a shared
+/// child-process registry. When concurrent test threads each spawn and
+/// wait on tokio child processes, the signal handler races with the
+/// per-thread `waitpid()` calls, which can trigger internal assertions and
+/// cause the test binary to abort with SIGABRT.
+///
+/// Any test that spawns a `tokio::process::Child` (via `tokio::process::Command`
+/// or shells the `ShellTool`) must hold this lock for the duration of the
+/// child's lifetime (spawn → wait/kill).
+///
+/// Usage:
+/// ```ignore
+/// let _guard = crate::test_helpers::PROC_MUTEX.lock().unwrap();
+/// ```
+#[cfg(test)]
+pub mod test_helpers {
+    use std::sync::Mutex;
+
+    pub static PROC_MUTEX: Mutex<()> = Mutex::new(());
+}
+
 /// Re-export commonly used types.
 pub mod prelude {
     pub use crate::channels::{Channel, IncomingMessage, MessageStream};
