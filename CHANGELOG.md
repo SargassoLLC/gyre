@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0-beta.2] - 2026-07-15
+
+### Fixed
+
+- **Claude.ai subscription auth no longer expires into a dead end.** Gyre
+  now reads the full Claude Code credential set (access + refresh token +
+  expiry) instead of just the short-lived access token: it refreshes
+  automatically at `gyre run` startup and during setup, never uses an
+  expired token, and on failure prints a clear "run `gyre auth login`"
+  message instead of a raw 401. New `gyre auth status|login|refresh`
+  command to inspect and refresh on demand. The refreshed credential file
+  is written owner-only (0o600).
+- Installer (`install.sh` + getgyre.com) resolves pre-release versions and
+  cargo-dist's archive layout; the getgyre.com one-liner points at
+  `/install.sh` (the `/install` HTML page can't be piped to a shell).
+
 ## [0.3.0-beta.1] - 2026-07-14
 
 First public beta. Note: versioning restarted from the 0.2.0-beta.1 rewrite;
