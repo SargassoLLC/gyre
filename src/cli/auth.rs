@@ -97,8 +97,13 @@ async fn login() {
                  …or set ANTHROPIC_API_KEY to a console.anthropic.com API key."
             );
         }
-        _ => {
-            print!("Refreshing Claude.ai subscription token… ");
+        CredentialStatus::Valid { expires_at } => {
+            // ensure_fresh_token wouldn't refresh a still-valid token, so
+            // don't claim we did — just report it.
+            println!("Claude.ai subscription session is still valid — {}", fmt_expiry(expires_at));
+        }
+        CredentialStatus::Expired => {
+            print!("Refreshing expired Claude.ai subscription token… ");
             let (status, _token) = claude_oauth::ensure_fresh_token().await;
             match status {
                 CredentialStatus::Valid { expires_at } => {
