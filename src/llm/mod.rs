@@ -8,6 +8,7 @@
 // TODO: Gyre native provider
 
 pub mod circuit_breaker;
+pub mod claude_oauth;
 pub mod cost_tracker;
 pub mod costs;
 pub mod failover;

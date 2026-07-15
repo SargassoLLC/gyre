@@ -13,6 +13,7 @@
 //! - Egress audit log (`egress log`)
 
 pub mod agents;
+pub mod auth;
 pub mod axiom;
 pub mod cognitive_run;
 mod config;
@@ -35,6 +36,7 @@ pub mod tribe;
 pub mod update;
 pub mod usage;
 
+pub use auth::{AuthCommand, run_auth_command};
 pub use axiom::{AxiomCommand, run_axiom_command};
 pub use config::{ConfigCommand, run_config_command};
 pub use doctor::run_doctor_command;
@@ -340,6 +342,10 @@ pub enum Command {
     /// View the egress audit log (outbound network requests from native tools).
     #[command(subcommand)]
     Egress(EgressCommand),
+
+    /// Inspect or refresh LLM authentication (Claude.ai subscription token).
+    #[command(subcommand)]
+    Auth(AuthCommand),
 
     /// Send a task from one agent to another via the A2A protocol.
     Send {

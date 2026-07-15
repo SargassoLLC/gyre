@@ -71,8 +71,9 @@ impl AuthModelStage {
         let existing_backend = state.settings.llm_backend.clone();
 
         // Try to auto-detect credentials in priority order.
-        // 1. Claude.ai subscription OAuth token
-        if let Some(token) = crate::config::ClaudeCodeConfig::extract_oauth_token() {
+        // 1. Claude.ai subscription OAuth token (refreshed in place if stale)
+        let (_oauth_status, quick_oauth) = crate::llm::claude_oauth::ensure_fresh_token().await;
+        if let Some(token) = quick_oauth {
             state.settings.llm_backend = Some("anthropic".to_string());
             state.llm_api_key = Some(secrecy::SecretString::from(token));
             ui.success("Auto-detected Claude.ai subscription credentials.");
@@ -127,9 +128,20 @@ impl AuthModelStage {
     ) -> Result<(), SetupError> {
         state.settings.llm_backend = Some("anthropic".to_string());
 
-        // Try to auto-detect Claude.ai subscription credentials from Claude Code's
-        // OAuth store (macOS Keychain or ~/.claude/.credentials.json).
-        let oauth_token = crate::config::ClaudeCodeConfig::extract_oauth_token();
+        // Auto-detect Claude.ai subscription credentials from Claude Code's
+        // OAuth store, refreshing in place if the stored token is expired so
+        // a signed-in-but-idle user is still recognized (and never blessed
+        // with a token that's already dead).
+        let (oauth_status, oauth_token) = crate::llm::claude_oauth::ensure_fresh_token().await;
+        if matches!(
+            oauth_status,
+            crate::llm::claude_oauth::CredentialStatus::Expired
+        ) {
+            ui.info(
+                "Claude Code is signed in but its session has expired and couldn't be \
+                 refreshed. Re-sign-in with `claude`, or enter an API key below.",
+            );
+        }
 
         let api_key = if let Some(ref token) = oauth_token {
             ui.success("Found Claude.ai subscription credentials (via Claude Code).");
