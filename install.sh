@@ -91,9 +91,16 @@ download_and_install() {
     VERSION="$1"
     TARGET="$2"
 
-    ARCHIVE_NAME="gyre-${VERSION}-${TARGET}.tar.gz"
-    CHECKSUM_NAME="${ARCHIVE_NAME}.sha256"
     BASE_URL="https://github.com/${REPO}/releases/download/${VERSION}"
+
+    # cargo-dist archives are unversioned (gyre-<target>.tar.gz); releases
+    # before the pipeline consolidation used gyre-<version>-<target>.tar.gz.
+    # Try the current naming first, fall back to the legacy one.
+    ARCHIVE_NAME="gyre-${TARGET}.tar.gz"
+    if ! curl -fsIL "${BASE_URL}/${ARCHIVE_NAME}" >/dev/null 2>&1; then
+        ARCHIVE_NAME="gyre-${VERSION}-${TARGET}.tar.gz"
+    fi
+    CHECKSUM_NAME="${ARCHIVE_NAME}.sha256"
     ARCHIVE_URL="${BASE_URL}/${ARCHIVE_NAME}"
     CHECKSUM_URL="${BASE_URL}/${CHECKSUM_NAME}"
 
