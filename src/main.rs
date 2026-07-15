@@ -17,8 +17,9 @@ use gyre::{
         web::log_layer::{LogBroadcaster, WebLogLayer},
     },
     cli::{
-        Cli, Command, run_axiom_command, run_license_command, run_mcp_command, run_pairing_command,
-        run_service_command, run_status_command, run_template_command, run_tool_command,
+        Cli, Command, run_axiom_command, run_egress_command, run_license_command, run_mcp_command,
+        run_pairing_command, run_service_command, run_status_command, run_template_command,
+        run_tool_command,
     },
     config::Config,
     context::ContextManager,
@@ -239,6 +240,22 @@ async fn main() -> anyhow::Result<()> {
                 .init();
 
             return run_license_command(license_cmd.clone()).await;
+        }
+        Some(Command::Egress(egress_cmd)) => {
+            tracing_subscriber::fmt()
+                .with_env_filter(
+                    EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("warn")),
+                )
+                .init();
+
+            let config = Config::from_env()
+                .await
+                .map_err(|e| anyhow::anyhow!("{}", e))?;
+            let db = gyre::db::connect_from_config(&config.database)
+                .await
+                .map_err(|e| anyhow::anyhow!("{}", e))?;
+
+            return run_egress_command(egress_cmd.clone(), db).await;
         }
         Some(Command::Worker {
             job_id,

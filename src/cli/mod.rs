@@ -10,12 +10,14 @@
 //! - Managing OS service (`service install`, `service start`, `service stop`)
 //! - Active health diagnostics (`doctor`)
 //! - Checking system health (`status`)
+//! - Egress audit log (`egress log`)
 
 pub mod agents;
 pub mod axiom;
 pub mod cognitive_run;
 mod config;
 mod doctor;
+pub mod egress;
 pub mod explore;
 mod health;
 pub mod license;
@@ -36,6 +38,7 @@ pub mod usage;
 pub use axiom::{AxiomCommand, run_axiom_command};
 pub use config::{ConfigCommand, run_config_command};
 pub use doctor::run_doctor_command;
+pub use egress::{EgressCommand, run_egress_command};
 pub use health::run_health_command;
 pub use license::{LicenseCommand, run_license_command};
 pub use mcp::{McpCommand, run_mcp_command};
@@ -333,6 +336,10 @@ pub enum Command {
     /// Manage your Gyre license (activate, status, deactivate).
     #[command(subcommand)]
     License(LicenseCommand),
+
+    /// View the egress audit log (outbound network requests from native tools).
+    #[command(subcommand)]
+    Egress(EgressCommand),
 
     /// Send a task from one agent to another via the A2A protocol.
     Send {

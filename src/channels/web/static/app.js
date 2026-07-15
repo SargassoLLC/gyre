@@ -823,6 +823,7 @@ function switchTab(tab) {
   if (tab === 'routines') loadRoutines();
   if (tab === 'logs') applyLogFilters();
   if (tab === 'extensions') loadExtensions();
+  if (tab === 'egress') loadEgressEvents();
 }
 
 // --- Memory (filesystem tree) ---
@@ -2347,4 +2348,48 @@ async function pollBrainStatus() {
     }
   } catch (e) { /* silently retry */ }
   brainPollTimer = setTimeout(pollBrainStatus, 5000);
+}
+
+// --- Egress audit log ---
+
+function loadEgressEvents() {
+  const limit = document.getElementById('egress-limit').value || '50';
+  apiFetch('/api/egress/events?limit=' + encodeURIComponent(limit))
+    .then((data) => renderEgressEvents(data))
+    .catch((err) => showToast('Failed to load egress events: ' + err.message, 'error'));
+}
+
+function renderEgressEvents(data) {
+  const tbody = document.getElementById('egress-tbody');
+  const empty = document.getElementById('egress-empty');
+  const countEl = document.getElementById('egress-count');
+
+  if (!data.events || data.events.length === 0) {
+    tbody.innerHTML = '';
+    empty.style.display = 'block';
+    countEl.textContent = '';
+    return;
+  }
+
+  empty.style.display = 'none';
+  countEl.textContent = data.total + ' event(s)';
+
+  tbody.innerHTML = data.events.map((e) => {
+    const isDenied = e.decision === 'denied';
+    const decisionClass = isDenied ? 'badge failed' : 'badge completed';
+    const decisionLabel = isDenied ? 'DENY' : 'allow';
+    const rowClass = isDenied ? 'egress-row egress-denied' : 'egress-row';
+    const dest = escapeHtml(e.host + e.path);
+    const ts = new Date(e.ts).toLocaleString();
+
+    return '<tr class="' + rowClass + '">'
+      + '<td class="egress-ts">' + escapeHtml(ts) + '</td>'
+      + '<td>' + escapeHtml(e.tool) + '</td>'
+      + '<td><code>' + escapeHtml(e.method) + '</code></td>'
+      + '<td class="egress-dest" title="' + dest + '">' + dest + '</td>'
+      + '<td><span class="' + decisionClass + '">' + decisionLabel + '</span></td>'
+      + '<td>' + escapeHtml(e.mode) + '</td>'
+      + '<td class="egress-reason">' + escapeHtml(e.reason || e.leak_verdict) + '</td>'
+      + '</tr>';
+  }).join('');
 }

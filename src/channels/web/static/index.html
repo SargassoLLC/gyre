@@ -40,6 +40,7 @@
       <button data-tab="logs">Logs</button>
       <button data-tab="routines">Routines</button>
       <button data-tab="extensions">Extensions</button>
+      <button data-tab="egress">Egress</button>
       <div class="spacer"></div>
       <button class="brain-toggle-btn" id="brain-toggle-btn" onclick="toggleBrainPanel()" title="Toggle neural graph">Brain</button>
       <div class="status" id="gateway-status-trigger">
@@ -168,6 +169,41 @@
           No routines configured. Ask the assistant to create one.
         </div>
         <div class="routine-detail" id="routine-detail" style="display:none"></div>
+      </div>
+    </div>
+
+    <!-- Egress Tab -->
+    <div class="tab-panel" id="tab-egress">
+      <div class="egress-container">
+        <div class="egress-toolbar">
+          <button onclick="loadEgressEvents()">Refresh</button>
+          <label>Limit:
+            <select id="egress-limit">
+              <option value="50" selected>50</option>
+              <option value="100">100</option>
+              <option value="250">250</option>
+            </select>
+          </label>
+          <span id="egress-count" class="egress-count"></span>
+        </div>
+        <table class="egress-table" id="egress-table">
+          <thead>
+            <tr>
+              <th>Timestamp</th>
+              <th>Tool</th>
+              <th>Method</th>
+              <th>Destination</th>
+              <th>Decision</th>
+              <th>Mode</th>
+              <th>Reason</th>
+            </tr>
+          </thead>
+          <tbody id="egress-tbody"></tbody>
+        </table>
+        <div class="empty-state" id="egress-empty" style="display:none">
+          No egress events yet. Events appear here after the first outbound request from a native tool.
+          Egress auditing is on by default in observe mode.
+        </div>
       </div>
     </div>
 

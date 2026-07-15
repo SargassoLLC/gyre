@@ -247,6 +247,8 @@ pub async fn start_server(
             "/api/settings/{key}",
             axum::routing::delete(settings_delete_handler),
         )
+        // Egress audit log
+        .route("/api/egress/events", get(egress_events_handler))
         // Brain (neural graph)
         .route("/api/brain", get(brain_handler))
         // Gateway control plane
@@ -2639,6 +2641,43 @@ struct GatewayStatusResponse {
     sse_connections: u64,
     ws_connections: u64,
     total_connections: u64,
+}
+
+// --- Egress audit log handler ---
+
+async fn egress_events_handler(
+    State(state): State<Arc<GatewayState>>,
+    Query(params): Query<EgressEventsQuery>,
+) -> Result<Json<EgressEventsResponse>, (StatusCode, String)> {
+    let store = state.store.as_ref().ok_or((
+        StatusCode::SERVICE_UNAVAILABLE,
+        "Database not available".to_string(),
+    ))?;
+
+    let limit = params.limit.unwrap_or(50).clamp(1, 1000);
+    let raw = store
+        .list_egress_events(limit)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    let events: Vec<EgressEventInfo> = raw
+        .iter()
+        .map(|e| EgressEventInfo {
+            id: e.id.to_string(),
+            ts: e.ts.to_rfc3339(),
+            tool: e.tool.clone(),
+            method: e.method.clone(),
+            host: e.host.clone(),
+            path: e.path.clone(),
+            decision: e.decision.as_str().to_string(),
+            mode: e.mode.clone(),
+            reason: e.reason.clone(),
+            leak_verdict: e.leak_verdict.clone(),
+        })
+        .collect();
+
+    let total = events.len();
+    Ok(Json(EgressEventsResponse { events, total }))
 }
 
 #[cfg(test)]

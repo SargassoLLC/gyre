@@ -966,3 +966,33 @@ mod tests {
         assert_eq!(req.extension_name, "telegram");
     }
 }
+
+// --- Egress ---
+
+/// One audited egress decision returned from `GET /api/egress/events`.
+#[derive(Debug, Serialize)]
+pub struct EgressEventInfo {
+    pub id: String,
+    pub ts: String,
+    pub tool: String,
+    pub method: String,
+    pub host: String,
+    pub path: String,
+    pub decision: String,
+    pub mode: String,
+    pub reason: String,
+    pub leak_verdict: String,
+}
+
+/// Response for `GET /api/egress/events`.
+#[derive(Debug, Serialize)]
+pub struct EgressEventsResponse {
+    pub events: Vec<EgressEventInfo>,
+    pub total: usize,
+}
+
+/// Query parameters for `GET /api/egress/events`.
+#[derive(Debug, Deserialize)]
+pub struct EgressEventsQuery {
+    pub limit: Option<i64>,
+}

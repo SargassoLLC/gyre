@@ -2613,3 +2613,97 @@ mark {
     width: 100%;
   }
 }
+
+/* ============================================================
+   Egress audit log tab
+   ============================================================ */
+
+.egress-container {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  padding: 16px;
+  gap: 12px;
+  overflow: hidden;
+}
+
+.egress-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-shrink: 0;
+}
+
+.egress-toolbar label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.85rem;
+  color: var(--text-muted);
+}
+
+.egress-count {
+  font-size: 0.85rem;
+  color: var(--text-muted);
+  margin-left: auto;
+}
+
+.egress-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.82rem;
+  overflow-y: auto;
+  flex: 1;
+}
+
+.egress-table thead th {
+  text-align: left;
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--border);
+  color: var(--text-muted);
+  font-weight: 600;
+  position: sticky;
+  top: 0;
+  background: var(--surface);
+}
+
+.egress-table td {
+  padding: 5px 10px;
+  border-bottom: 1px solid var(--border-subtle, var(--border));
+  vertical-align: top;
+  max-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.egress-table .egress-ts {
+  white-space: nowrap;
+  color: var(--text-muted);
+  font-family: monospace;
+  font-size: 0.78rem;
+}
+
+.egress-table .egress-dest {
+  font-family: monospace;
+  font-size: 0.80rem;
+  max-width: 280px;
+}
+
+.egress-table .egress-reason {
+  color: var(--text-muted);
+  font-size: 0.80rem;
+  max-width: 200px;
+}
+
+.egress-row:hover {
+  background: var(--surface-hover, rgba(255,255,255,0.04));
+}
+
+.egress-row.egress-denied {
+  background: rgba(var(--error-rgb, 220, 38, 38), 0.06);
+}
+
+.egress-row.egress-denied:hover {
+  background: rgba(var(--error-rgb, 220, 38, 38), 0.10);
+}
