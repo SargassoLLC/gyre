@@ -1,4 +1,5 @@
 # Next Session Handoff — written 2026-07-14, end of launch sprint
+# (updated same day, end of follow-on orchestration wave)
 
 **State:** branch `fresh-start`, pushed to public `github.com/SargassoLLC/gyre`.
 Tag `v0.3.0-beta.1` cut. `cargo test --lib`: **1,379 passed / 0 failed** (default,
@@ -15,39 +16,59 @@ libsql-only, and all-features builds clean). One adversarial review pass applied
 | Review fixes | `f3caefb` | full_job hard deadline (`ROUTINES_FULL_JOB_TIMEOUT_SECS`); unrepairable Stuck→Failed; http userinfo reject; HttpTool::new()→Result |
 | Release prep | `f89690b`..`600678b` | version 0.3.0-beta.1; CHANGELOG; repo URLs → SargassoLLC/gyre (sac916/gyre is PRIVATE); Windows E0283 fix; wix regen |
 
+## Done in the follow-on wave (2026-07-14 evening — do not redo)
+
+- `fresh-start` merged → `main`; both branches current on the remote.
+- Tier 4 site fixes deployed to getgyre.com (commands, repo links, GitHub nav
+  link, real /docs from QUICKSTART.md). Site repo: `~/kimi/getgyre-site`.
+- BOTH installers (repo `install.sh` + site `public/install.sh`) fixed and
+  verified end-to-end against the live release: `/releases/latest` excludes
+  pre-releases (betas!), so both resolve via `/releases?per_page=1`; dist
+  archives nest the binary under `gyre-<target>/`.
+- Release pipeline consolidated on cargo-dist 0.32.0; `release-gyre.yml`
+  retired (it raced dist's host job). Homebrew formula publishing configured
+  to `SargassoLLC/homebrew-gyre` (repo created).
+- `gyre egress log` CLI + `GET /api/egress/events` + gateway Egress tab.
+- Per-job `allowed_tools` persisted in `SandboxJobRecord` (both backends,
+  V10 migration + libsql incremental column); restart path preserves the
+  deny-all sentinel exactly.
+- SIGABRT flake root-caused: tokio's SIGCHLD handling overflows macOS Mach
+  ports when parallel tests spawn+kill children. Process-spawning tests now
+  serialize on `test_helpers::PROC_MUTEX` (current_thread flavor). Residual
+  ~3% from 295 multi-thread tokio runtimes — if CI still flakes, use
+  `--test-threads=4`.
+- `brain_verify` gate restored: `~/.local/bin/brain_verify` wraps
+  `sargasso-brain pool verify` (the capability existed; the CLI never did).
+  Hook output contract is compact JSON — the hook greps `"passed":true`.
+
 ## Pickup order
 
-1. **Merge `fresh-start` → `main`** (Greg's call). Remote main has one commit not
-   on fresh-start (`4dba5c3`, site image tweak). install.sh is fetched from
-   `main`, so installs stay stale until this merge.
-2. **Tier 4 site fixes** (LAUNCH_PLAN.md): `gyre init`→`gyre setup`, `gyre
-   serve`→`gyre run`, demo GIF, /docs, GitHub link.
-3. **Homebrew tap** (`homebrew-gyre/`) — site advertises `brew install gyre`.
-4. **`gyre egress log` CLI + gateway tab** — surfacing the egress_events audit
-   (design doc lists as pending). Also `examples/crabtrap-proxy/` compose file.
-5. Carried: persist per-job `allowed_tools` in `SandboxJobRecord` (restart path
-   falls back to defaults — see web server restart handler); `gyre blueprint
-   test` simulation harness (v0.4).
+1. **Set `HOMEBREW_TAP_TOKEN` secret on SargassoLLC/gyre** (Greg: PAT with
+   push access to SargassoLLC/homebrew-gyre) — the homebrew publish job
+   fails without it. Then the next tag exercises the whole consolidated
+   pipeline end-to-end, including `brew install SargassoLLC/gyre/gyre`.
+2. **Demo GIFs** — two placeholder slots on the site (hero + live demo).
+   Needs an interactive `gyre setup` → `gyre run` recording session.
+3. **Tier 5** (LAUNCH_PLAN.md): waitlist form, "Why we built Gyre" blog
+   post (copy exists on site), #announcements channel.
+4. `examples/crabtrap-proxy/` compose file (egress design doc, still pending).
+5. `gyre blueprint test` full simulation harness (v0.4, SPRINT_PLAN Rev 3).
 
 ## Traps for the next implementer
 
-- **The pre-push hook calls a `brain_verify` CLI that does not exist anywhere
-  on this machine** — it fails closed on EVERY push. `sargasso_node/scripts/
-  cron-approval-gate.sh` calls the same missing command. Repair or replace the
-  gate (Greg's decision); until then pushes need `--no-verify`, consciously.
-- **Two release workflows fire on the same tag** (`release.yml` = cargo-dist
-  5-target matrix + installers; `release-gyre.yml` = custom macOS/Linux
-  tarballs). They race to create the GitHub release. Works today; consider
-  consolidating before v0.4.
+- **brain_verify wrapper contract:** the pre-push hook greps for compact
+  `"passed":true` — any reformat of the wrapper's JSON output re-breaks the
+  gate silently. The underlying `sargasso-brain pool verify` exits 0 even on
+  FAIL; the wrapper keys on output text, not exit code.
 - **cargo-dist validates checked-in generated files** (`wix/main.wxs`,
   `release.yml`) against Cargo.toml config — any change to `repository`,
   installers, or targets requires regenerating them (`dist init`) or the plan
   job fails. It normalizes line endings but not content.
 - **Windows target only:** `encode_unicode` (via console/dialoguer) makes bare
   `rng.gen()` ambiguous for `Vec<u8>` collects — always annotate.
-- **~8% test-suite SIGABRT flake** (pre-existing): tunnel child-process kill
-  tests abort the harness under parallel execution. Rerun; passes. Worth a
-  real fix before CI runs tests on every push.
+- **Disk:** the main target/ plus one agent-worktree target/ can fill the
+  drive mid-session (hit ENOSPC twice on 2026-07-14). Delete worktree
+  target/ dirs as soon as their commits merge; `cargo clean` if tight.
 - Stale local tags v0.3.0–v0.5.0 (Feb, pre-restart) exist locally but NOT on
   the remote. Never `git push --tags` from this clone.
 - Prior traps still apply: deny-all toolsAllow = `","`; 6/7-field seconds-first
