@@ -75,10 +75,12 @@ detect_platform() {
 fetch_latest_version() {
     need curl
 
+    # /releases (newest first) rather than /releases/latest: the latter
+    # excludes pre-releases, and betas are published as pre-releases.
     LATEST=$(curl -fsSL \
         -H "Accept: application/vnd.github.v3+json" \
-        "https://api.github.com/repos/${REPO}/releases/latest" \
-        | grep '"tag_name"' \
+        "https://api.github.com/repos/${REPO}/releases?per_page=1" \
+        | grep -m1 '"tag_name"' \
         | sed -E 's/.*"tag_name": "([^"]+)".*/\1/')
 
     [ -n "$LATEST" ] || die "Could not determine the latest Gyre version. Check your internet connection."
@@ -148,7 +150,12 @@ download_and_install() {
     # Extract binary
     say "Extracting..."
     tar -xzf "$ARCHIVE_PATH" -C "$TMPDIR"
-    [ -f "${TMPDIR}/${BINARY_NAME}" ] || die "Binary '${BINARY_NAME}' not found in archive."
+    # cargo-dist archives nest under gyre-<target>/; legacy archives are flat.
+    if [ ! -f "${TMPDIR}/${BINARY_NAME}" ]; then
+        FOUND_BIN="$(find "$TMPDIR" -maxdepth 2 -type f -name "$BINARY_NAME" | head -1)"
+        [ -n "$FOUND_BIN" ] || die "Binary '${BINARY_NAME}' not found in archive."
+        mv "$FOUND_BIN" "${TMPDIR}/${BINARY_NAME}"
+    fi
     chmod +x "${TMPDIR}/${BINARY_NAME}"
 
     # Install
