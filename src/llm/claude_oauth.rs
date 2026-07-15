@@ -36,12 +36,27 @@ const DEFAULT_TOKEN_URL: &str = "https://console.anthropic.com/v1/oauth/token";
 const EXPIRY_MARGIN_SECS: i64 = 300;
 
 /// The Claude Code OAuth credential set.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct ClaudeCredentials {
     pub access_token: String,
     pub refresh_token: Option<String>,
     /// Absolute expiry, if the store recorded one.
     pub expires_at: Option<chrono::DateTime<chrono::Utc>>,
+}
+
+// Manual Debug: never print the token material, even if a future caller
+// logs a `ClaudeCredentials` value.
+impl std::fmt::Debug for ClaudeCredentials {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ClaudeCredentials")
+            .field("access_token", &"[REDACTED]")
+            .field(
+                "refresh_token",
+                &self.refresh_token.as_ref().map(|_| "[REDACTED]"),
+            )
+            .field("expires_at", &self.expires_at)
+            .finish()
+    }
 }
 
 impl ClaudeCredentials {
@@ -95,28 +110,58 @@ pub fn parse_credentials(json: &str) -> Option<ClaudeCredentials> {
 
 /// Read the current Claude Code credentials from the platform store.
 /// Returns `None` when Claude Code is not installed / not signed in.
+///
+/// On macOS both the Keychain and the file may exist; we pick whichever
+/// holds the *fresher* token. This matters because `write_back` only
+/// updates the file: after a refresh the file is newer than the (stale)
+/// Keychain entry, and preferring the fresher source avoids re-refreshing
+/// on every startup (the macOS "split-brain" the reviewer flagged).
 pub fn load_credentials() -> Option<ClaudeCredentials> {
-    // macOS: Keychain generic password.
+    let mut best: Option<ClaudeCredentials> = None;
+
     #[cfg(target_os = "macos")]
-    {
-        if let Ok(output) = std::process::Command::new("security")
-            .args([
-                "find-generic-password",
-                "-s",
-                "Claude Code-credentials",
-                "-w",
-            ])
-            .output()
-            && output.status.success()
-            && let Ok(json) = String::from_utf8(output.stdout)
-        {
-            return parse_credentials(json.trim());
-        }
+    if let Some(kc) = load_from_keychain() {
+        best = Some(kc);
     }
 
-    // Linux/other: ~/.claude/.credentials.json
-    let creds_path = credentials_file_path()?;
-    let json = std::fs::read_to_string(&creds_path).ok()?;
+    if let Some(file) = load_from_file() {
+        best = Some(match best {
+            Some(existing) if expiry_key(&existing) >= expiry_key(&file) => existing,
+            _ => file,
+        });
+    }
+
+    best
+}
+
+/// Sort key for "freshness": later expiry wins; an unknown expiry sorts
+/// oldest so a source with a concrete future expiry is preferred.
+fn expiry_key(c: &ClaudeCredentials) -> i64 {
+    c.expires_at
+        .map(|e| e.timestamp_millis())
+        .unwrap_or(i64::MIN)
+}
+
+#[cfg(target_os = "macos")]
+fn load_from_keychain() -> Option<ClaudeCredentials> {
+    let output = std::process::Command::new("security")
+        .args([
+            "find-generic-password",
+            "-s",
+            "Claude Code-credentials",
+            "-w",
+        ])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let json = String::from_utf8(output.stdout).ok()?;
+    parse_credentials(json.trim())
+}
+
+fn load_from_file() -> Option<ClaudeCredentials> {
+    let json = std::fs::read_to_string(credentials_file_path()?).ok()?;
     parse_credentials(&json)
 }
 
@@ -202,6 +247,43 @@ pub fn current_status() -> CredentialStatus {
     }
 }
 
+#[derive(Clone, Copy)]
+enum Encoding {
+    Json,
+    Form,
+}
+
+/// Post a single refresh request with the given encoding. Returns the parsed
+/// JSON response body on a 2xx, `None` on any failure.
+async fn post_refresh(
+    client: &reqwest::Client,
+    url: &str,
+    refresh_token: &str,
+    encoding: Encoding,
+) -> Option<Value> {
+    let req = match encoding {
+        Encoding::Json => client.post(url).json(&refresh_request_body(refresh_token)),
+        Encoding::Form => client.post(url).form(&[
+            ("grant_type", "refresh_token"),
+            ("refresh_token", refresh_token),
+            ("client_id", &client_id()),
+        ]),
+    };
+
+    let resp = match req.send().await {
+        Ok(r) => r,
+        Err(e) => {
+            tracing::warn!(error = %e, "Claude OAuth refresh request failed");
+            return None;
+        }
+    };
+    if !resp.status().is_success() {
+        tracing::debug!(status = %resp.status(), "Claude OAuth refresh non-2xx (may retry other encoding)");
+        return None;
+    }
+    resp.json().await.ok()
+}
+
 /// Perform the OAuth refresh. Returns the new credentials on success, `None`
 /// on any failure (network, non-2xx, malformed body, missing fields).
 async fn refresh(refresh_token: &str) -> Option<ClaudeCredentials> {
@@ -218,25 +300,14 @@ async fn refresh(refresh_token: &str) -> Option<ClaudeCredentials> {
         .build()
         .ok()?;
 
-    let resp = match client
-        .post(&url)
-        .json(&refresh_request_body(refresh_token))
-        .send()
-        .await
-    {
-        Ok(r) => r,
-        Err(e) => {
-            tracing::warn!(error = %e, "Claude OAuth refresh request failed");
-            return None;
-        }
-    };
+    // Try JSON first (what Claude Code's endpoint uses), then fall back to
+    // form-encoding (RFC 6749 default) so we succeed regardless of which the
+    // endpoint expects. Any total failure returns None → guided reauth.
+    let body = match post_refresh(&client, &url, refresh_token, Encoding::Json).await {
+        Some(b) => Some(b),
+        None => post_refresh(&client, &url, refresh_token, Encoding::Form).await,
+    }?;
 
-    if !resp.status().is_success() {
-        tracing::warn!(status = %resp.status(), "Claude OAuth refresh returned non-success");
-        return None;
-    }
-
-    let body: Value = resp.json().await.ok()?;
     let access_token = body.get("access_token")?.as_str()?.to_string();
     // Rotated refresh token if present, else keep the current one.
     let new_refresh = body
@@ -265,6 +336,11 @@ fn write_back(creds: &ClaudeCredentials) -> std::io::Result<()> {
     let Some(path) = credentials_file_path() else {
         return Ok(());
     };
+    write_back_to(&path, creds)
+}
+
+/// Path-parameterized write-back (so it can be tested against a temp file).
+fn write_back_to(path: &std::path::Path, creds: &ClaudeCredentials) -> std::io::Result<()> {
     // Merge into the existing blob to avoid dropping fields we don't model.
     let mut root: Value = std::fs::read_to_string(&path)
         .ok()
@@ -289,9 +365,24 @@ fn write_back(creds: &ClaudeCredentials) -> std::io::Result<()> {
         oauth.insert("expiresAt".into(), Value::from(exp.timestamp_millis()));
     }
 
-    // Atomic-ish: write a temp file then rename over the original.
+    // Atomic-ish: write a temp file (owner-only) then rename over the
+    // original. The refresh token is secret, so the file must never be
+    // world-readable — create it 0o600 up front rather than inheriting umask.
     let tmp = path.with_extension("json.gyre-tmp");
-    std::fs::write(&tmp, serde_json::to_string(&root)?)?;
+    let serialized = serde_json::to_string(&root)?;
+    {
+        use std::io::Write;
+        let mut opts = std::fs::OpenOptions::new();
+        opts.create(true).truncate(true).write(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            opts.mode(0o600);
+        }
+        let mut f = opts.open(&tmp)?;
+        f.write_all(serialized.as_bytes())?;
+        f.flush()?;
+    }
     std::fs::rename(&tmp, &path)?;
     Ok(())
 }
@@ -365,5 +456,79 @@ mod tests {
         assert_eq!(body["grant_type"], "refresh_token");
         assert_eq!(body["refresh_token"], "sk-ant-ort01-xyz");
         assert!(body["client_id"].as_str().is_some_and(|s| !s.is_empty()));
+    }
+
+    #[test]
+    fn write_back_preserves_unknown_fields_and_updates_tokens() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(".credentials.json");
+        // Pre-existing blob with a field we don't model.
+        std::fs::write(
+            &path,
+            r#"{"claudeAiOauth":{"accessToken":"old","refreshToken":"old-r","subscriptionType":"pro"},"otherTop":"keep"}"#,
+        )
+        .unwrap();
+
+        let exp = chrono::Utc::now() + chrono::Duration::hours(8);
+        let creds = ClaudeCredentials {
+            access_token: "new-access".into(),
+            refresh_token: Some("new-refresh".into()),
+            expires_at: Some(exp),
+        };
+        write_back_to(&path, &creds).unwrap();
+
+        let written: Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(written["claudeAiOauth"]["accessToken"], "new-access");
+        assert_eq!(written["claudeAiOauth"]["refreshToken"], "new-refresh");
+        // Unmodeled fields survive.
+        assert_eq!(written["claudeAiOauth"]["subscriptionType"], "pro");
+        assert_eq!(written["otherTop"], "keep");
+        // Re-reading through the parser round-trips.
+        let reparsed = parse_credentials(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(reparsed.access_token, "new-access");
+        assert!(!reparsed.is_expired(chrono::Utc::now()));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn write_back_creates_owner_only_file() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(".credentials.json");
+        let creds = ClaudeCredentials {
+            access_token: "secret-access".into(),
+            refresh_token: Some("secret-refresh".into()),
+            expires_at: Some(chrono::Utc::now() + chrono::Duration::hours(8)),
+        };
+        write_back_to(&path, &creds).unwrap();
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(
+            mode, 0o600,
+            "credentials file must be owner-only, got {:o}",
+            mode
+        );
+    }
+
+    #[test]
+    fn load_prefers_fresher_source() {
+        // expiry_key ordering: later expiry wins, unknown sorts oldest.
+        let old = ClaudeCredentials {
+            access_token: "a".into(),
+            refresh_token: None,
+            expires_at: Some(chrono::Utc::now() - chrono::Duration::hours(1)),
+        };
+        let new = ClaudeCredentials {
+            access_token: "b".into(),
+            refresh_token: None,
+            expires_at: Some(chrono::Utc::now() + chrono::Duration::hours(8)),
+        };
+        assert!(expiry_key(&new) > expiry_key(&old));
+        let no_exp = ClaudeCredentials {
+            access_token: "c".into(),
+            refresh_token: None,
+            expires_at: None,
+        };
+        assert!(expiry_key(&old) > expiry_key(&no_exp));
     }
 }

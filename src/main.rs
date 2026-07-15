@@ -518,9 +518,13 @@ async fn main() -> anyhow::Result<()> {
     if std::env::var("ANTHROPIC_API_KEY").is_err() {
         let (status, _token) = gyre::llm::claude_oauth::ensure_fresh_token().await;
         if matches!(status, gyre::llm::claude_oauth::CredentialStatus::Expired) {
-            tracing::warn!(
-                "Claude.ai subscription token is expired and could not be refreshed; \
-                 run `gyre auth login` or `claude` to re-sign-in"
+            // The tracing subscriber isn't installed yet here, so a
+            // tracing::warn would be dropped — write straight to stderr so the
+            // user sees the one line that tells them how to recover.
+            eprintln!(
+                "warning: your Claude.ai subscription session is expired and could not be \
+                 refreshed automatically.\n         Run `gyre auth login` (or `claude` to \
+                 re-sign-in), or set ANTHROPIC_API_KEY."
             );
         }
     }

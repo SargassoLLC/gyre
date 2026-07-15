@@ -100,7 +100,10 @@ async fn login() {
         CredentialStatus::Valid { expires_at } => {
             // ensure_fresh_token wouldn't refresh a still-valid token, so
             // don't claim we did — just report it.
-            println!("Claude.ai subscription session is still valid — {}", fmt_expiry(expires_at));
+            println!(
+                "Claude.ai subscription session is still valid — {}",
+                fmt_expiry(expires_at)
+            );
         }
         CredentialStatus::Expired => {
             print!("Refreshing expired Claude.ai subscription token… ");
